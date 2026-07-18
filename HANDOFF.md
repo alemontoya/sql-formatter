@@ -86,7 +86,12 @@ core/src/
   format.ts            — top-level `format(sql, template): string` entry point
   style-template.ts     — StyleTemplate TS type (mirrors the JSON schema) + applyCasing()
   try.ts               — dev utility: `npx tsx src/try.ts <template.json> <file.sql>` prints formatted output, not part of the build
-  __fixtures__/snowflake-plan-cycles.sql — a real user script, used as a regression-test fixture (59 comments, heavy CASE/window-function usage)
+  __fixtures__/ — real user scripts, used as regression-test fixtures (see the dated bug-fix sections below for what each one caught):
+    snowflake-plan-cycles.sql (59 comments, heavy CASE/window-function usage)
+    financial-forecast-feed.sql
+    persona-product-activity-subscription.sql
+    daily-status-unpivot.sql
+    learning-active-users-subscriptions.sql
   format.test.ts        — printer-level tests: exact output, idempotency, comment-count parity, balanced parens
 cli/src/
   index.ts             — shebang entry point (`#!/usr/bin/env node`), just calls run(process.argv.slice(2))
