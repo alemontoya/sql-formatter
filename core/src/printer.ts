@@ -42,9 +42,12 @@ class Builder {
   out = "";
   private atLineStart = true;
   private lastRaw: string | null = null;
+  private forceNoSpaceNext = false;
 
   text(value: string, noSpace = false) {
-    if (this.out.length > 0 && !this.atLineStart && !noSpace) this.out += " ";
+    const skip = noSpace || this.forceNoSpaceNext;
+    this.forceNoSpaceNext = false;
+    if (this.out.length > 0 && !this.atLineStart && !skip) this.out += " ";
     this.out += value;
     this.atLineStart = false;
     this.lastRaw = value;
@@ -53,6 +56,11 @@ class Builder {
   spaceAwareText(value: string) {
     const noSpace = this.lastRaw !== null && NO_SPACE_AFTER.has(this.lastRaw);
     this.text(value, noSpace || NO_SPACE_BEFORE.has(value));
+  }
+
+  /** Suppresses the space before the very next piece of text (e.g. a unary sign's operand). */
+  suppressNextSpace() {
+    this.forceNoSpaceNext = true;
   }
 
   newline(ctx: Ctx, level: number) {
@@ -98,6 +106,22 @@ function classifyLeaf(nodes: Node[], idx: number): "keyword" | "function" | "typ
   const next = nodes[idx + 1];
   if (next && next.kind === "group") return "function";
   return "identifier";
+}
+
+const BINARY_TRIGGER_TYPES = new Set(["identifier", "quotedIdentifier", "number", "string"]);
+
+/** A `-`/`+` is a unary sign (no space before its operand) unless it directly
+ * follows a value it could be subtracting/adding from (an identifier,
+ * number, string, or a parenthesized group). */
+function isUnarySign(nodes: Node[], idx: number): boolean {
+  const node = nodes[idx];
+  if (node.kind !== "leaf") return false;
+  const { token } = node.leaf;
+  if (token.type !== "operator" || (token.value !== "-" && token.value !== "+")) return false;
+  const prev = nodes[idx - 1];
+  if (!prev) return true;
+  if (prev.kind === "group") return false;
+  return !BINARY_TRIGGER_TYPES.has(prev.leaf.token.type);
 }
 
 function printComments(b: Builder, ctx: Ctx, comments: Token_[], level: number) {
@@ -156,6 +180,7 @@ function printSeq(nodes: Node[], level: number, ctx: Ctx): string {
 
     const kind = classifyLeaf(nodes, idx);
     b.spaceAwareText(renderLeafText(node.leaf, kind, ctx));
+    if (isUnarySign(nodes, idx)) b.suppressNextSpace();
     if (node.leaf.trailingComment) b.text(node.leaf.trailingComment.value);
   }
 
@@ -447,20 +472,30 @@ function printStatementBody(nodes: Node[], level: number, ctx: Ctx): string {
       b.newline(ctx, level);
     }
 
+    // SELECT DISTINCT/ALL: keep the modifier attached to the SELECT keyword
+    // itself rather than letting it wrap as if it were the first list item.
+    let body = clause.body;
+    let selectModifier = "";
+    if (clause.keyword === "SELECT" && (isKeywordLeaf(body[0], "DISTINCT") || isKeywordLeaf(body[0], "ALL"))) {
+      selectModifier = applyCasing((body[0] as LeafNode).leaf.token.value, ctx.style.casing.keywords);
+      body = body.slice(1);
+    }
+
     // A comment trailing the keyword itself (e.g. "SELECT -- note") reads
     // better folded into the body's leading comments than stuck on the
     // keyword line, when the body starts on its own line anyway.
-    if (lastKeywordLeaf?.trailingComment && clause.body.length > 0) {
-      const target = firstLeaf(clause.body[0]);
+    if (lastKeywordLeaf?.trailingComment && body.length > 0) {
+      const target = firstLeaf(body[0]);
       target.leadingComments = [lastKeywordLeaf.trailingComment, ...target.leadingComments];
       lastKeywordLeaf.trailingComment = null;
     }
 
     let keywordText = printClauseKeyword(clause, ctx);
+    if (selectModifier) keywordText += " " + selectModifier;
     if (lastKeywordLeaf?.trailingComment) {
       keywordText += " " + lastKeywordLeaf.trailingComment.value;
     }
-    const bodyText = printClauseBody(clause, level + 1, ctx);
+    const bodyText = printClauseBody({ ...clause, body }, level + 1, ctx);
     if (bodyText.length === 0) {
       b.raw(keywordText);
     } else if (!bodyText.includes("\n")) {

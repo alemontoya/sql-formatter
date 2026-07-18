@@ -227,6 +227,51 @@ tests in `format.test.ts` (`describe("format (JOIN)")` /
    that `printJoin()` now always supplies, bypassing the
    `indentContinuation`-driven default.
 
+## Bugs found formatting a real 672-line user script (fixed)
+
+The user ran the CLI on an actual production script (Snowflake, heavy CTEs,
+currency conversion, window functions — not committed to the repo; see below).
+Surfaced two more bugs, now fixed, plus 4 new regression tests in
+`format.test.ts`:
+
+1. **Unary minus/plus got a spurious space before their operand** — e.g.
+   `ADD_MONTHS(d, -12)` printed as `ADD_MONTHS(d, - 12)`. The printer's
+   `NO_SPACE_AFTER` set never covered `-`/`+` since there was no concept of
+   unary vs. binary operators — every operator got a space on both sides by
+   default. Fixed by adding `isUnarySign()` in `printer.ts` (a `-`/`+` is
+   unary unless it directly follows an identifier, number, string, or a
+   parenthesized group — i.e. something it could plausibly be subtracting
+   from) and a `Builder.suppressNextSpace()` that `printSeq` calls right
+   after printing a unary sign, so the operand attaches with no gap.
+2. **`SELECT DISTINCT` with a multi-column list wrapped `DISTINCT` onto its
+   own line** as if it were the first list item (e.g. `SELECT\n  DISTINCT
+   col_a,\n  col_b`), because `DISTINCT`/`ALL` were just ordinary tokens at
+   the front of the SELECT clause body with no special handling — the list
+   splitter grouped `DISTINCT` together with the first column into one
+   comma-item. Fixed in `printStatementBody()`: a leading `DISTINCT`/`ALL`
+   keyword is now peeled off the SELECT clause's body and appended to the
+   `SELECT` keyword text itself before the (now-shorter) body is printed, so
+   it always reads `SELECT DISTINCT` / `SELECT ALL` on the header line
+   regardless of whether the column list wraps.
+
+Both were caught by eyeballing the CLI's output on the real file — `npx
+vitest run` alone wouldn't have caught either, since neither the synthetic
+tests nor `snowflake-plan-cycles.sql` happened to exercise `SELECT DISTINCT`
+with 2+ columns or a unary numeric literal inside a function call. Worth
+periodically re-running the CLI against real scripts, not just `vitest run`,
+since the synthetic fixture's coverage has known holes.
+
+The user's script (originally dropped in the repo root as `fff.sql`) was, at
+the user's explicit go-ahead, added as a second permanent regression fixture:
+`core/src/__fixtures__/financial-forecast-feed.sql`, with its own
+`describe("format (real-world fixture: financial-forecast-feed)")` block in
+`format.test.ts` — comment-preservation/idempotency/balanced-parens like the
+Snowflake fixture, plus two fixture-specific regression checks tied to the
+bugs it caught (no space after a unary sign, `DISTINCT` never wrapping onto
+its own line). It contains real business schema/column names (customer IDs,
+subscription internals, discount logic) — still ask before adding another
+file like it, this one just happened to get explicit sign-off.
+
 Also confirmed working correctly with no changes needed: `USING (...)` joins
 (no `ON` clause), `RECURSIVE` CTE keyword placement, chains of 3+ single-
 condition joins (each stays inline per the general "no internal newline ⇒

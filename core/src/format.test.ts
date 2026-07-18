@@ -55,6 +55,31 @@ describe("format", () => {
     const twice = format(once, defaultTemplate);
     expect(twice).toBe(once);
   });
+
+  it("does not insert a space between a unary minus/plus and its operand", () => {
+    const sql = "select ADD_MONTHS(x, -12), REPLACE(y, -1, z), -a, +b from t where c = -5 and d = a - 1;";
+    const out = format(sql, defaultTemplate);
+    expect(out).toContain("ADD_MONTHS(x, -12)");
+    expect(out).toContain("REPLACE(y, -1, z)");
+    expect(out).toContain("-a,");
+    expect(out).toContain("+b");
+    expect(out).toContain("c = -5");
+    // binary subtraction still gets spaces on both sides
+    expect(out).toContain("d = a - 1");
+  });
+
+  it("keeps SELECT DISTINCT attached to the keyword when the list wraps", () => {
+    const sql = "select distinct id, name, email from users;";
+    const out = format(sql, defaultTemplate);
+    expect(out.split("\n")[0]).toBe("SELECT DISTINCT");
+    expect(out).not.toContain("  DISTINCT ");
+  });
+
+  it("keeps SELECT DISTINCT inline when the single-column body doesn't wrap", () => {
+    const sql = "select distinct id from users;";
+    const out = format(sql, defaultTemplate);
+    expect(out).toContain("SELECT DISTINCT id");
+  });
 });
 
 describe("format (JOIN)", () => {
@@ -183,7 +208,7 @@ describe("format (WITH / CTEs)", () => {
   });
 });
 
-describe("format (real-world fixture)", () => {
+describe("format (real-world fixture: snowflake-plan-cycles)", () => {
   const fixturePath = new URL("./__fixtures__/snowflake-plan-cycles.sql", import.meta.url);
   const sql = readFileSync(fixturePath, "utf8");
 
@@ -208,5 +233,43 @@ describe("format (real-world fixture)", () => {
     const opens = (out.match(/\(/g) ?? []).length;
     const closes = (out.match(/\)/g) ?? []).length;
     expect(opens).toBe(closes);
+  });
+});
+
+describe("format (real-world fixture: financial-forecast-feed)", () => {
+  const fixturePath = new URL("./__fixtures__/financial-forecast-feed.sql", import.meta.url);
+  const sql = readFileSync(fixturePath, "utf8");
+
+  it("preserves every comment when formatting with the default template", () => {
+    const out = format(sql, defaultTemplate);
+    expect(commentCount(out)).toBe(commentCount(sql));
+  });
+
+  it("preserves every comment when formatting with the compact template", () => {
+    const out = format(sql, compactTemplate);
+    expect(commentCount(out)).toBe(commentCount(sql));
+  });
+
+  it("is idempotent on the real-world fixture", () => {
+    const once = format(sql, defaultTemplate);
+    const twice = format(once, defaultTemplate);
+    expect(twice).toBe(once);
+  });
+
+  it("produces syntactically balanced parentheses", () => {
+    const out = format(sql, defaultTemplate);
+    const opens = (out.match(/\(/g) ?? []).length;
+    const closes = (out.match(/\)/g) ?? []).length;
+    expect(opens).toBe(closes);
+  });
+
+  it("never inserts a space between a unary sign and its operand (regression: ADD_MONTHS(..., -12))", () => {
+    const out = format(sql, defaultTemplate);
+    expect(out).not.toMatch(/[-+] \d/);
+  });
+
+  it("keeps SELECT DISTINCT on the keyword line even when the column list wraps (regression)", () => {
+    const out = format(sql, defaultTemplate);
+    expect(out).not.toMatch(/\n\s*DISTINCT /);
   });
 });
