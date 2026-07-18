@@ -1,0 +1,270 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/alejandro/sql-formatter/schema/style-template.schema.json",
+  "title": "SQL Formatter Style Template",
+  "description": "A flat (non-per-clause) formatting style template consumed by the sql-formatter core engine.",
+  "type": "object",
+  "required": ["id", "name", "version", "schemaVersion", "dialect", "source", "style"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Stable, unique identifier for this template, e.g. \"jane-default\". Used for lookup and by `extends`.",
+      "pattern": "^[a-z0-9][a-z0-9-]*$"
+    },
+    "name": {
+      "type": "string",
+      "description": "Human-readable display name."
+    },
+    "description": {
+      "type": "string",
+      "description": "Optional longer description of when/why to use this template."
+    },
+    "version": {
+      "type": "string",
+      "description": "Semver of this template. Bump when the style rules change.",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "schemaVersion": {
+      "type": "string",
+      "description": "Semver of this schema itself, so older templates remain interpretable after the schema evolves.",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "dialect": {
+      "type": "string",
+      "description": "Target SQL dialect. \"generic\" applies dialect-agnostic rules only.",
+      "enum": ["generic", "postgres", "snowflake", "sqlite"]
+    },
+    "extends": {
+      "type": ["string", "null"],
+      "description": "id of a base template this one inherits from. Fields set here override the base; unset fields fall back to the base's resolved value.",
+      "default": null
+    },
+    "source": {
+      "type": "object",
+      "description": "Provenance of this template.",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["manual", "inferred"]
+        },
+        "confidence": {
+          "type": "object",
+          "description": "Only present when type is \"inferred\". Per-field confidence scores (0-1) from the style-inference engine, keyed by dotted path into `style` (e.g. \"casing.keywords\").",
+          "additionalProperties": { "type": "number", "minimum": 0, "maximum": 1 }
+        }
+      }
+    },
+    "style": {
+      "type": "object",
+      "description": "The actual formatting rules. Flat: one setting per concern, applied uniformly across the whole script (no per-clause overrides yet).",
+      "required": [
+        "casing",
+        "indentation",
+        "lineWidth",
+        "clauses",
+        "lists",
+        "commas",
+        "joins",
+        "booleanOperators",
+        "ctes",
+        "parentheses",
+        "alignment",
+        "quoting",
+        "blankLines",
+        "statementTerminator"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "casing": {
+          "type": "object",
+          "required": ["keywords", "functions", "types", "identifiers"],
+          "additionalProperties": false,
+          "properties": {
+            "keywords": { "$ref": "#/$defs/casingRule" },
+            "functions": { "$ref": "#/$defs/casingRule" },
+            "types": { "$ref": "#/$defs/casingRule" },
+            "identifiers": { "$ref": "#/$defs/casingRule" }
+          }
+        },
+        "indentation": {
+          "type": "object",
+          "required": ["char", "size"],
+          "additionalProperties": false,
+          "properties": {
+            "char": { "type": "string", "enum": ["space", "tab"] },
+            "size": { "type": "integer", "minimum": 1, "maximum": 8, "description": "Width in characters (or number of tabs) per indent level." }
+          }
+        },
+        "lineWidth": {
+          "type": "integer",
+          "minimum": 20,
+          "description": "Max line length before wrapping is triggered."
+        },
+        "clauses": {
+          "type": "object",
+          "required": ["forceNewlinePerClause", "inlineShortStatements"],
+          "additionalProperties": false,
+          "properties": {
+            "forceNewlinePerClause": {
+              "type": "boolean",
+              "description": "Each major clause (SELECT, FROM, WHERE, GROUP BY, ORDER BY, ...) starts on its own line."
+            },
+            "inlineShortStatements": {
+              "type": "boolean",
+              "description": "Allow a statement under lineWidth to stay on one line even if forceNewlinePerClause is true."
+            }
+          }
+        },
+        "lists": {
+          "type": "object",
+          "required": ["onePerLine", "wrapThresholdItems"],
+          "additionalProperties": false,
+          "properties": {
+            "onePerLine": {
+              "type": "boolean",
+              "description": "Column/expression lists (SELECT list, GROUP BY, ORDER BY, IN (...)) break one item per line."
+            },
+            "wrapThresholdItems": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Minimum item count before a list is wrapped, when onePerLine is false and wrapping is otherwise triggered by lineWidth."
+            }
+          }
+        },
+        "commas": {
+          "type": "object",
+          "required": ["style", "alignAfterComma"],
+          "additionalProperties": false,
+          "properties": {
+            "style": { "type": "string", "enum": ["leading", "trailing"] },
+            "alignAfterComma": {
+              "type": "boolean",
+              "description": "Align wrapped list items into a column after the comma."
+            }
+          }
+        },
+        "joins": {
+          "type": "object",
+          "required": ["onClausePlacement", "multiConditionIndent"],
+          "additionalProperties": false,
+          "properties": {
+            "onClausePlacement": { "type": "string", "enum": ["sameLine", "newLine"] },
+            "multiConditionIndent": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Extra indent levels for a multi-condition ON clause."
+            }
+          }
+        },
+        "booleanOperators": {
+          "type": "object",
+          "required": ["style", "indentContinuation"],
+          "additionalProperties": false,
+          "properties": {
+            "style": {
+              "type": "string",
+              "enum": ["leading", "trailing"],
+              "description": "AND/OR placed at the start (leading) or end (trailing) of the line when a WHERE/ON clause wraps."
+            },
+            "indentContinuation": {
+              "type": "boolean",
+              "description": "Indent continuation lines of a wrapped boolean chain one extra level."
+            }
+          }
+        },
+        "ctes": {
+          "type": "object",
+          "required": ["onePerLine", "blankLineBetween"],
+          "additionalProperties": false,
+          "properties": {
+            "onePerLine": {
+              "type": "boolean",
+              "description": "Each CTE in a WITH clause starts on its own line."
+            },
+            "blankLineBetween": {
+              "type": "boolean",
+              "description": "Insert a blank line between successive CTEs."
+            }
+          }
+        },
+        "parentheses": {
+          "type": "object",
+          "required": ["subqueryOpenParenSameLine"],
+          "additionalProperties": false,
+          "properties": {
+            "subqueryOpenParenSameLine": {
+              "type": "boolean",
+              "description": "Subquery's opening paren stays on the calling line vs. moves to its own line."
+            }
+          }
+        },
+        "alignment": {
+          "type": "object",
+          "required": ["aliases", "assignments"],
+          "additionalProperties": false,
+          "properties": {
+            "aliases": {
+              "type": "boolean",
+              "description": "Align AS aliases into a column across a list."
+            },
+            "assignments": {
+              "type": "boolean",
+              "description": "Align = signs into a column (e.g. in UPDATE ... SET or INSERT column lists)."
+            }
+          }
+        },
+        "quoting": {
+          "type": "object",
+          "required": ["forceQuoteIdentifiers", "quoteChar"],
+          "additionalProperties": false,
+          "properties": {
+            "forceQuoteIdentifiers": {
+              "type": "boolean",
+              "description": "Always quote identifiers, even when not required (e.g. no reserved word/mixed case)."
+            },
+            "quoteChar": {
+              "type": "string",
+              "enum": ["double", "backtick", "bracket", "none"],
+              "description": "Quote style for identifiers. \"none\" leaves existing quoting untouched."
+            }
+          }
+        },
+        "blankLines": {
+          "type": "object",
+          "required": ["betweenStatements", "aroundCtes"],
+          "additionalProperties": false,
+          "properties": {
+            "betweenStatements": {
+              "type": "string",
+              "enum": ["preserve", "collapseToOne", "none"]
+            },
+            "aroundCtes": {
+              "type": "boolean",
+              "description": "Blank line before/after the WITH block as a whole."
+            }
+          }
+        },
+        "statementTerminator": {
+          "type": "object",
+          "required": ["alwaysAppendSemicolon"],
+          "additionalProperties": false,
+          "properties": {
+            "alwaysAppendSemicolon": {
+              "type": "boolean",
+              "description": "Append a trailing semicolon to every statement, even if the input omitted it."
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "casingRule": {
+      "type": "string",
+      "enum": ["upper", "lower", "preserve", "capitalize"]
+    }
+  }
+}

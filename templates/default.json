@@ -1,0 +1,67 @@
+{
+  "id": "default",
+  "name": "Default",
+  "description": "Conventional readable style: uppercase keywords, one clause and one column per line, trailing commas.",
+  "version": "1.0.0",
+  "schemaVersion": "1.0.0",
+  "dialect": "generic",
+  "extends": null,
+  "source": {
+    "type": "manual"
+  },
+  "style": {
+    "casing": {
+      "keywords": "upper",
+      "functions": "upper",
+      "types": "upper",
+      "identifiers": "preserve"
+    },
+    "indentation": {
+      "char": "space",
+      "size": 2
+    },
+    "lineWidth": 100,
+    "clauses": {
+      "forceNewlinePerClause": true,
+      "inlineShortStatements": false
+    },
+    "lists": {
+      "onePerLine": true,
+      "wrapThresholdItems": 1
+    },
+    "commas": {
+      "style": "trailing",
+      "alignAfterComma": false
+    },
+    "joins": {
+      "onClausePlacement": "sameLine",
+      "multiConditionIndent": 1
+    },
+    "booleanOperators": {
+      "style": "leading",
+      "indentContinuation": true
+    },
+    "ctes": {
+      "onePerLine": true,
+      "blankLineBetween": false
+    },
+    "parentheses": {
+      "subqueryOpenParenSameLine": true
+    },
+    "alignment": {
+      "aliases": false,
+      "assignments": false
+    },
+    "quoting": {
+      "forceQuoteIdentifiers": false,
+      "quoteChar": "none"
+    },
+    "blankLines": {
+      "betweenStatements": "collapseToOne",
+      "aroundCtes": false
+    },
+    "statementTerminator": {
+      "alwaysAppendSemicolon": true
+    }
+  }
+}

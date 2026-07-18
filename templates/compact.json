@@ -1,0 +1,67 @@
+{
+  "id": "compact",
+  "name": "Compact",
+  "description": "Minimal wrapping: lowercase keywords, packs short lists onto one line, leading commas when it does wrap.",
+  "version": "1.0.0",
+  "schemaVersion": "1.0.0",
+  "dialect": "generic",
+  "extends": null,
+  "source": {
+    "type": "manual"
+  },
+  "style": {
+    "casing": {
+      "keywords": "lower",
+      "functions": "lower",
+      "types": "lower",
+      "identifiers": "preserve"
+    },
+    "indentation": {
+      "char": "space",
+      "size": 4
+    },
+    "lineWidth": 120,
+    "clauses": {
+      "forceNewlinePerClause": true,
+      "inlineShortStatements": true
+    },
+    "lists": {
+      "onePerLine": false,
+      "wrapThresholdItems": 4
+    },
+    "commas": {
+      "style": "leading",
+      "alignAfterComma": false
+    },
+    "joins": {
+      "onClausePlacement": "sameLine",
+      "multiConditionIndent": 0
+    },
+    "booleanOperators": {
+      "style": "trailing",
+      "indentContinuation": false
+    },
+    "ctes": {
+      "onePerLine": false,
+      "blankLineBetween": false
+    },
+    "parentheses": {
+      "subqueryOpenParenSameLine": true
+    },
+    "alignment": {
+      "aliases": false,
+      "assignments": false
+    },
+    "quoting": {
+      "forceQuoteIdentifiers": false,
+      "quoteChar": "none"
+    },
+    "blankLines": {
+      "betweenStatements": "collapseToOne",
+      "aroundCtes": false
+    },
+    "statementTerminator": {
+      "alwaysAppendSemicolon": true
+    }
+  }
+}

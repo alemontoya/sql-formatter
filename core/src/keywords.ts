@@ -1,0 +1,25 @@
+export const KEYWORDS = new Set(
+  [
+    "SELECT", "FROM", "WHERE", "JOIN", "INNER", "LEFT", "RIGHT", "FULL", "OUTER",
+    "CROSS", "ON", "GROUP", "BY", "ORDER", "HAVING", "LIMIT", "OFFSET", "FETCH",
+    "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE", "MERGE", "USING",
+    "CREATE", "TABLE", "ALTER", "DROP", "TRUNCATE", "RENAME", "ADD", "COLUMN",
+    "WITH", "RECURSIVE", "AS", "AND", "OR", "NOT", "NULL", "IS", "IN", "EXISTS",
+    "BETWEEN", "LIKE", "ILIKE", "SIMILAR", "CASE", "WHEN", "THEN", "ELSE", "END",
+    "DISTINCT", "UNION", "INTERSECT", "EXCEPT", "ALL", "ANY", "SOME", "ASC", "DESC",
+    "NULLS", "FIRST", "LAST", "PRIMARY", "KEY", "FOREIGN", "REFERENCES", "UNIQUE",
+    "CHECK", "DEFAULT", "CONSTRAINT", "INDEX", "VIEW", "MATERIALIZED", "TRIGGER",
+    "PROCEDURE", "FUNCTION", "RETURN", "RETURNS", "RETURNING", "DECLARE", "BEGIN",
+    "COMMIT", "ROLLBACK", "TRANSACTION", "SAVEPOINT", "GRANT", "REVOKE", "CASCADE",
+    "RESTRICT", "IF", "OVER", "PARTITION", "WINDOW", "ROWS", "RANGE", "PRECEDING",
+    "FOLLOWING", "UNBOUNDED", "CURRENT", "ROW", "LATERAL", "TABLESAMPLE",
+    "INTERVAL", "COLLATE", "SCHEMA", "DATABASE", "SEQUENCE", "TEMP",
+    "TEMPORARY", "ONLY", "ANALYZE", "VACUUM", "EXPLAIN", "COPY", "DO",
+    "NOTHING", "CONFLICT", "FILTER", "WITHIN", "GROUPING", "SETS", "CUBE",
+    "ROLLUP", "PIVOT", "UNPIVOT", "QUALIFY", "SAMPLE", "TOP",
+  ].map((k) => k.toUpperCase())
+);
+
+export function isKeyword(word: string): boolean {
+  return KEYWORDS.has(word.toUpperCase());
+}
