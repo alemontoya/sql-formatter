@@ -227,6 +227,11 @@ tests in `format.test.ts` (`describe("format (JOIN)")` /
    that `printJoin()` now always supplies, bypassing the
    `indentContinuation`-driven default.
 
+Also confirmed working correctly with no changes needed: `USING (...)` joins
+(no `ON` clause), `RECURSIVE` CTE keyword placement, chains of 3+ single-
+condition joins (each stays inline per the general "no internal newline ⇒
+stays on keyword's line" rule), and idempotency on multi-CTE queries.
+
 ## Bugs found formatting a real 672-line user script (fixed)
 
 The user ran the CLI on an actual production script (Snowflake, heavy CTEs,
@@ -292,7 +297,125 @@ dialect-specific operators are covered — nothing currently distinguishes
 "generic" from "postgres"/"snowflake"/"sqlite" operator sets, so anything
 dialect-specific has to be manually added and manually noticed missing.
 
-Also confirmed working correctly with no changes needed: `USING (...)` joins
-(no `ON` clause), `RECURSIVE` CTE keyword placement, chains of 3+ single-
-condition joins (each stays inline per the general "no internal newline ⇒
-stays on keyword's line" rule), and idempotency on multi-CTE queries.
+## Long arithmetic (+/-) chains now wrap (new feature, plus a bug it exposed)
+
+A third real script (persona/product-activity, not committed — no explicit
+go-ahead requested this time) had SELECT-list items like `IFF(...) +
+IFF(...) + ... AS total_products_subscribed` — a long chain of `+`-joined
+terms the user had manually broken across lines by hand. The printer had
+never had any concept of wrapping a *single list item's* internal expression
+— only commas (lists) and `AND`/`OR` (boolean chains) triggered wrapping —
+so this rendered as one 700+ character line, blowing through `lineWidth`
+(100) by 7x. This wasn't a copy/paste mistake in a template; it was a
+genuinely unimplemented case, confirmed by grepping the schema for anything
+resembling an "arithmetic wrap" knob (none exists).
+
+Asked the user how it should wrap; they chose to reuse the existing
+`booleanOperators` knob (`style`: leading/trailing operator placement,
+`indentContinuation`) rather than invent a separate config surface for
+arithmetic chains — one operator-chain-wrapping style for the whole
+template, not two. Implemented by generalizing the old
+`splitBooleanChain`/`printBooleanChain` pair into `splitChain`/`printChain`
+(parameterized by a "what counts as a split point" predicate) in
+`printer.ts`, with `isAndOr` and the new `isArithmeticOp` (a `+`/`-` that
+`isUnarySign` doesn't already claim) as the two predicates. A new
+`printListItem()` wraps any SELECT/GROUP BY/ORDER BY/etc. list item at
+`+`/`-` boundaries once its flat rendering overflows `lineWidth` — checked
+per rendered *line*, not just "does it contain a newline anywhere", since an
+item can already contain a newline from an embedded comment while still
+having individual lines that are far too wide (this was the first version's
+bug: bailing out early on any embedded newline, matching neither the
+`SELECT DISTINCT` nor the width check, and skipping the very item that most
+needed wrapping).
+
+This also exposed — and fixed — an **idempotency/comment-loss bug** in the
+new-and-old chain-splitting logic: `splitChain`/`splitBooleanChain` only
+ever extracted the operator token's *text* (`"AND"`, `"+"`, etc.) and threw
+away the leaf node itself. A comment sitting on the *same line* as the
+operator token attaches to it as a `trailingComment` (vs. a comment on its
+own line, which attaches as a `leadingComment` of the following token) —
+and a trailing comment on a discarded leaf silently vanished. This didn't
+show up with `AND`/`OR` in any existing test (nobody writes `AND -- note`
+inline), but the wrapped arithmetic-chain output itself put the comment on
+the same line as `+` (`+ -- note`), so *reformatting the formatter's own
+output* dropped the comment — a real idempotency violation, caught by
+running the CLI's output back through itself, not by `vitest run`. Fixed by
+folding a split-operator's trailing comment onto the next segment's leading
+comments inside `splitChain()` before discarding the leaf, so it survives
+regardless of which side of the split it happened to land on. Worth
+remembering: **any code that extracts an operator token's value and drops
+the node is a candidate for this same bug** if that operator can ever carry
+a trailing comment.
+
+6 new synthetic tests added to `format.test.ts` covering: wrapping over
+lineWidth, not-over-wrapping short chains, and idempotency with a mid-chain
+comment. The triggering script itself, at the user's go-ahead, is now a
+third committed fixture:
+`core/src/__fixtures__/persona-product-activity-subscription.sql`, with its
+own `describe` block — same comment/idempotency/balanced-parens checks as
+the other two fixtures, plus a second-reformat-pass idempotency check
+(regression for the trailing-comment-on-operator bug specifically) and a
+max-line-length check (regression for the arithmetic-wrap bug specifically,
+tolerant of the unrelated long-function-call-with-no-split-point lines
+elsewhere in the file).
+
+## Two more bugs from a 4th real script: CASE-comment loss, group wrapping (fixed)
+
+A script using `UNPIVOT INCLUDE NULLS (...)` and several `CASE` expressions
+with section-header comments (`-- Studio`, `-- Distribution`, ...) on their
+own line before a `WHEN`/`ELSE` branch surfaced two more bugs, both fixed:
+
+1. **Comments immediately before a `WHEN`/`ELSE` keyword inside a `CASE`
+   block were silently dropped** — 4 of 14 comments in the source vanished
+   entirely. `printCaseBlock()` in `printer.ts` manually reconstructs each
+   branch's text (`applyCasing("WHEN", ...) + " " + ...`) from scratch
+   rather than going through the generic per-node leading-comment handling
+   that `printSeq()` does everywhere else, so a comment attached to the
+   `WHEN`/`ELSE` leaf itself as a `leadingComment` was never looked at —
+   only the branch's condition/result nodes were captured, not the keyword
+   leaf itself. Fixed by threading the keyword leaf through into each
+   `Branch` and printing its `leadingComments` before the branch's text,
+   the same way `printStatementBody()` already does for clause keywords.
+2. **Parenthesized groups (function-call args, `IN (...)` lists, `UNPIVOT`
+   column lists) never wrapped, at all, regardless of width** — a 39-column
+   `UNPIVOT (... FOR product_stream IN (...))` list rendered as one
+   giant line. Unlike clause-level lists (`SELECT`, `GROUP BY`, ...), which
+   go through `printList()` and respect `lineWidth`, `printGroup()`'s
+   multi-item branch just joined everything with `", "` unconditionally.
+   Asked the user how to fix this, since naively reusing `printList()`
+   (which respects `lists.onePerLine`, `true` in the default template) would
+   have made every multi-arg function call explode onto separate lines —
+   a huge, unwanted regression. Fixed with a dedicated `printGroupItems()`
+   that wraps one-item-per-line **only when the flat rendering overflows
+   `lineWidth`**, deliberately ignoring `lists.onePerLine`/`wrapThresholdItems`
+   since those are specifically for clause-level lists, not generic groups.
+
+14 new tests added: `describe("format (CASE)")` (comment before `WHEN`,
+before `ELSE`, multiple branches, idempotency) and
+`describe("format (parenthesized groups)")` (short calls/`IN` lists stay
+inline, long ones wrap, idempotency). The triggering script is a fourth
+committed fixture: `core/src/__fixtures__/daily-status-unpivot.sql`.
+
+Notice the pattern across all four real scripts so far: every one has found
+a bug in a codepath that either (a) never went through the shared
+`printSeq`/`printList` machinery and instead hand-rolled its own text
+construction (`printCaseBlock`, `printGroup`'s old inline branch), or (b)
+assumed a closed/complete set of cases (`MULTI_CHAR_OPERATORS`,
+`isUnarySign`'s binary/unary distinction). When extending the printer,
+prefer routing new constructs through the existing comment-aware,
+width-aware building blocks (`printSeq`, `printList`, `printChain`) over
+writing a new special-cased renderer from scratch.
+
+## 5th real script bug: Snowflake's semi-structured colon (fixed)
+
+A script using `sections.value:id` (Snowflake's `col:field` syntax for
+reaching into a VARIANT/JSON column, as opposed to `::` casting) printed as
+`sections.value : id` — spaces on both sides. Same failure shape as the
+`=>` bug: a lone `:` fell through to the tokenizer's generic single-char
+operator fallback (only `::` and `:=` were in `MULTI_CHAR_OPERATORS`, so a
+standalone `:` was never given special spacing treatment), and the printer's
+`NO_SPACE_BEFORE`/`NO_SPACE_AFTER` sets (`printer.ts`) had no entry for it,
+so default binary-operator spacing applied. Fixed by adding `":"` to both
+sets, treating it like `.` (member access — no space either side). One new
+test, including a nested-path case (`value:nested:field`) to confirm
+consecutive single colons don't get misparsed as anything else.

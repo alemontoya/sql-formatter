@@ -8,8 +8,8 @@ interface Ctx {
   style: StyleTemplate["style"];
 }
 
-const NO_SPACE_BEFORE = new Set([",", ")", ";", ".", "::"]);
-const NO_SPACE_AFTER = new Set(["(", ".", "::"]);
+const NO_SPACE_BEFORE = new Set([",", ")", ";", ".", "::", ":"]);
+const NO_SPACE_AFTER = new Set(["(", ".", "::", ":"]);
 
 function indentUnit(ctx: Ctx): string {
   return ctx.style.indentation.char === "tab" ? "\t" : " ".repeat(ctx.style.indentation.size);
@@ -190,7 +190,7 @@ function printSeq(nodes: Node[], level: number, ctx: Ctx): string {
 function printCaseBlock(inner: Node[], level: number, ctx: Ctx): string {
   // Split `inner` into WHEN/THEN branches (+ optional ELSE), only at depth 0
   // relative to this CASE (nested CASE...END spans are skipped over).
-  type Branch = { when: Node[]; then: Node[] } | { elseResult: Node[] };
+  type Branch = { keywordLeaf: Leaf; when: Node[]; then: Node[] } | { keywordLeaf: Leaf; elseResult: Node[] };
   const branches: Branch[] = [];
   let depth = 0;
   let i = 0;
@@ -219,15 +219,16 @@ function printCaseBlock(inner: Node[], level: number, ctx: Ctx): string {
         k++;
       }
       const then = inner.slice(j + 1, k);
-      branches.push({ when, then });
+      branches.push({ keywordLeaf: (inner[i] as LeafNode).leaf, when, then });
       i = k;
       continue;
     }
 
     if (depth === 0 && isKeywordLeaf(inner[i], "ELSE")) {
+      const keywordLeaf = (inner[i] as LeafNode).leaf;
       let k = i + 1;
       while (k < inner.length) k++;
-      branches.push({ elseResult: inner.slice(i + 1, k) });
+      branches.push({ keywordLeaf, elseResult: inner.slice(i + 1, k) });
       i = k;
       continue;
     }
@@ -239,6 +240,10 @@ function printCaseBlock(inner: Node[], level: number, ctx: Ctx): string {
   b.raw(applyCasing("CASE", ctx.style.casing.keywords));
   for (const branch of branches) {
     b.newline(ctx, level + 1);
+    for (const c of branch.keywordLeaf.leadingComments) {
+      b.raw(c.value);
+      b.newline(ctx, level + 1);
+    }
     if ("elseResult" in branch) {
       b.raw(applyCasing("ELSE", ctx.style.casing.keywords) + " " + printSeq(branch.elseResult, level + 1, ctx));
     } else {
@@ -280,7 +285,8 @@ function printList(items: Node[][], level: number, ctx: Ctx, itemPrinter: (item:
   const shouldWrap =
     ctx.style.lists.onePerLine ||
     items.length >= ctx.style.lists.wrapThresholdItems ||
-    indentStr(ctx, level).length + inline.length > ctx.style.lineWidth;
+    indentStr(ctx, level).length + inline.length > ctx.style.lineWidth ||
+    rendered.some((r) => r.includes("\n"));
 
   if (!shouldWrap) return inline;
 
@@ -312,45 +318,98 @@ function printGroup(group: GroupNode, level: number, ctx: Ctx): string {
 
   const items = splitTopLevelCommas(group.content);
   if (items.length > 1) {
-    const inline = items.map((item) => printSeq(item, level, ctx)).join(", ");
-    return "(" + inline + ")";
+    return printGroupItems(items, level, ctx);
   }
 
   return "(" + printSeq(group.content, level, ctx) + ")";
 }
 
-/** Splits a boolean-chain clause body (WHERE/HAVING/ON) at top-level AND/OR. */
-function splitBooleanChain(nodes: Node[]): { op: "AND" | "OR" | null; nodes: Node[] }[] {
-  const result: { op: "AND" | "OR" | null; nodes: Node[] }[] = [];
-  let current: Node[] = [];
-  let op: "AND" | "OR" | null = null;
+/** Prints a parenthesized comma list (function-call args, IN (...), UNPIVOT
+ * column lists, ...) inline unless it overflows lineWidth, in which case it
+ * wraps one item per line — independent of `lists.onePerLine`, which is only
+ * for actual clause-level lists (SELECT, GROUP BY, ...) and would otherwise
+ * force every multi-arg function call to explode onto separate lines. */
+function printGroupItems(items: Node[][], level: number, ctx: Ctx): string {
+  const flatRendered = items.map((item) => printSeq(item, level, ctx));
+  const inline = flatRendered.join(", ");
+  const overflows =
+    flatRendered.some((r) => r.includes("\n")) ||
+    indentStr(ctx, level).length + inline.length + 2 > ctx.style.lineWidth;
+  if (!overflows) return "(" + inline + ")";
 
-  for (const node of nodes) {
-    if (isKeywordLeaf(node, "AND") || isKeywordLeaf(node, "OR")) {
+  const wrapped = items.map((item) => printSeq(item, level + 1, ctx));
+  const b = new Builder();
+  b.raw("(");
+  wrapped.forEach((text, i) => {
+    b.newline(ctx, level + 1);
+    const isLast = i === wrapped.length - 1;
+    if (ctx.style.commas.style === "leading") {
+      b.raw((i === 0 ? "" : ", ") + text);
+    } else {
+      b.raw(text + (isLast ? "" : ","));
+    }
+  });
+  b.newline(ctx, level);
+  b.raw(")");
+  return b.out;
+}
+
+/** Splits a flat node sequence into segments at whatever points `isSplitOp` flags. */
+function splitChain(
+  nodes: Node[],
+  isSplitOp: (nodes: Node[], idx: number) => string | null
+): { op: string | null; nodes: Node[] }[] {
+  const result: { op: string | null; nodes: Node[] }[] = [];
+  let current: Node[] = [];
+  let op: string | null = null;
+
+  for (let i = 0; i < nodes.length; i++) {
+    const opText = isSplitOp(nodes, i);
+    if (opText !== null) {
+      // A comment trailing the operator itself (same line, e.g. "+ -- note")
+      // would otherwise be discarded here — the operator node is dropped
+      // once its text is extracted. Fold it onto the next segment's leading
+      // comments instead, same trick used for clause keywords.
+      const opNode = nodes[i];
+      if (opNode.kind === "leaf" && opNode.leaf.trailingComment && nodes[i + 1]) {
+        const nextLeaf = firstLeaf(nodes[i + 1]);
+        nextLeaf.leadingComments = [opNode.leaf.trailingComment, ...nextLeaf.leadingComments];
+        opNode.leaf.trailingComment = null;
+      }
       result.push({ op, nodes: current });
       current = [];
-      op = (node as LeafNode).leaf.token.value.toUpperCase() as "AND" | "OR";
+      op = opText;
       continue;
     }
-    current.push(node);
+    current.push(nodes[i]);
   }
   result.push({ op, nodes: current });
   return result.filter((c) => c.nodes.length > 0);
 }
 
-function printBooleanChain(nodes: Node[], level: number, ctx: Ctx, continuationLevel?: number): string {
-  const conditions = splitBooleanChain(nodes);
-  if (conditions.length === 1) return printSeq(conditions[0].nodes, level, ctx);
+/** Prints a chain of segments (boolean or arithmetic) with one segment per
+ * line once there's more than one, using booleanOperators for placement/indent
+ * — the one shared "how do we wrap a chain of operators" style knob. */
+function printChain(
+  nodes: Node[],
+  level: number,
+  ctx: Ctx,
+  continuationLevel: number | undefined,
+  isSplitOp: (nodes: Node[], idx: number) => string | null,
+  renderOp: (op: string) => string
+): string {
+  const segments = splitChain(nodes, isSplitOp);
+  if (segments.length === 1) return printSeq(segments[0].nodes, level, ctx);
 
   const contLevel = continuationLevel ?? (ctx.style.booleanOperators.indentContinuation ? level + 1 : level);
   const b = new Builder();
-  conditions.forEach((cond, i) => {
-    const text = printSeq(cond.nodes, contLevel, ctx);
+  segments.forEach((seg, i) => {
+    const text = printSeq(seg.nodes, contLevel, ctx);
     if (i === 0) {
       b.raw(text);
       return;
     }
-    const opText = applyCasing(cond.op ?? "AND", ctx.style.casing.keywords);
+    const opText = renderOp(seg.op ?? "");
     if (ctx.style.booleanOperators.style === "leading") {
       b.newline(ctx, contLevel);
       b.raw(opText + " " + text);
@@ -363,6 +422,33 @@ function printBooleanChain(nodes: Node[], level: number, ctx: Ctx, continuationL
   return b.out;
 }
 
+function isAndOr(nodes: Node[], idx: number): string | null {
+  const node = nodes[idx];
+  if (isKeywordLeaf(node, "AND")) return "AND";
+  if (isKeywordLeaf(node, "OR")) return "OR";
+  return null;
+}
+
+function printBooleanChain(nodes: Node[], level: number, ctx: Ctx, continuationLevel?: number): string {
+  return printChain(nodes, level, ctx, continuationLevel, isAndOr, (op) => applyCasing(op, ctx.style.casing.keywords));
+}
+
+function isArithmeticOp(nodes: Node[], idx: number): string | null {
+  const node = nodes[idx];
+  if (node.kind !== "leaf") return null;
+  const { token } = node.leaf;
+  if (token.type !== "operator" || (token.value !== "+" && token.value !== "-")) return null;
+  if (isUnarySign(nodes, idx)) return null;
+  return token.value;
+}
+
+/** Wraps a long arithmetic (+/-) chain the same way WHERE/HAVING wrap AND/OR,
+ * reusing booleanOperators for placement/indent since it's the same shape of
+ * "chain of operators too long for one line" problem. */
+function printArithmeticChain(nodes: Node[], level: number, ctx: Ctx, continuationLevel?: number): string {
+  return printChain(nodes, level, ctx, continuationLevel, isArithmeticOp, (op) => op);
+}
+
 function printClauseKeyword(clause: Clause, ctx: Ctx): string {
   return clause.keyword
     .split(" ")
@@ -373,6 +459,18 @@ function printClauseKeyword(clause: Clause, ctx: Ctx): string {
 const LIST_CLAUSES = new Set(["SELECT", "FROM", "GROUP BY", "ORDER BY", "RETURNING", "VALUES", "SET"]);
 const CONDITION_CLAUSES = new Set(["WHERE", "HAVING"]);
 
+/** Prints one list item (a SELECT column, GROUP BY key, ...), wrapping a long
+ * arithmetic +/- chain onto multiple lines if the flat form overflows lineWidth. */
+function printListItem(item: Node[], level: number, ctx: Ctx): string {
+  const flat = printSeq(item, level, ctx);
+  const indent = indentStr(ctx, level).length;
+  const overflows = flat
+    .split("\n")
+    .some((line, i) => (i === 0 ? indent + line.length : line.length) > ctx.style.lineWidth);
+  if (!overflows) return flat;
+  return printArithmeticChain(item, level, ctx, level + 1);
+}
+
 function printClauseBody(clause: Clause, level: number, ctx: Ctx): string {
   if (clause.keyword === "VALUES") {
     const tuples = splitTopLevelCommas(clause.body);
@@ -380,7 +478,7 @@ function printClauseBody(clause: Clause, level: number, ctx: Ctx): string {
   }
   if (LIST_CLAUSES.has(clause.keyword)) {
     const items = splitTopLevelCommas(clause.body);
-    return printList(items, level, ctx, (item) => printSeq(item, level, ctx));
+    return printList(items, level, ctx, (item) => printListItem(item, level, ctx));
   }
   if (CONDITION_CLAUSES.has(clause.keyword)) {
     return printBooleanChain(clause.body, level, ctx);

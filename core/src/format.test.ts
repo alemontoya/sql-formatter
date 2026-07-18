@@ -88,6 +88,119 @@ describe("format", () => {
     expect(out).toContain("OUTER => TRUE");
     expect(out).not.toContain("= >");
   });
+
+  it("doesn't put spaces around Snowflake's semi-structured field-access colon (value:id)", () => {
+    const sql = "select t.value:id, t.value:nested:field from tbl as t;";
+    const out = format(sql, defaultTemplate);
+    expect(out).toContain("t.value:id");
+    expect(out).toContain("t.value:nested:field");
+    expect(out).not.toMatch(/value\s*:\s/);
+  });
+
+  it("wraps a long arithmetic +/- chain onto multiple lines when it exceeds lineWidth", () => {
+    const columns = Array.from({ length: 10 }, (_, i) => `some_reasonably_long_column_name_${i}`);
+    const sql = `select ${columns.join(" + ")} as total from t;`;
+    const out = format(sql, defaultTemplate);
+    for (const line of out.split("\n")) {
+      expect(line.length).toBeLessThanOrEqual(defaultTemplate.style.lineWidth);
+    }
+    expect(out).toContain("+ some_reasonably_long_column_name_9 AS total");
+  });
+
+  it("keeps a short arithmetic chain inline (doesn't over-wrap)", () => {
+    const sql = "select a + b as total from t;";
+    const out = format(sql, defaultTemplate);
+    expect(out).toContain("SELECT a + b AS total");
+  });
+
+  it("is idempotent when a wrapped arithmetic chain has a comment mid-chain", () => {
+    const items = Array.from({ length: 8 }, (_, i) => `IFF(has_flag_${i} != 'NULL', 1, 0)`);
+    const sql = `select ${items.slice(0, 4).join(" + ")} + -- note\n${items.slice(4).join(" + ")} as total from t;`;
+    const once = format(sql, defaultTemplate);
+    const twice = format(once, defaultTemplate);
+    expect(twice).toBe(once);
+    expect(commentCount(twice)).toBe(1);
+  });
+});
+
+describe("format (CASE)", () => {
+  it("preserves a comment on its own line before a WHEN branch", () => {
+    const sql = ["select case", "  -- studio", "  when x = 1 then 'a'", "  else 'b'", "end from t;"].join("\n");
+    const out = format(sql, defaultTemplate);
+    expect(out).toContain("-- studio");
+    expect(commentCount(out)).toBe(1);
+  });
+
+  it("preserves a comment on its own line before the ELSE branch", () => {
+    const sql = ["select case", "  when x = 1 then 'a'", "  -- fallback", "  else 'b'", "end from t;"].join("\n");
+    const out = format(sql, defaultTemplate);
+    expect(out).toContain("-- fallback");
+    expect(commentCount(out)).toBe(1);
+  });
+
+  it("preserves comments before multiple WHEN branches in the same CASE", () => {
+    const sql = [
+      "select case",
+      "  -- first",
+      "  when x = 1 then 'a'",
+      "  -- second",
+      "  when x = 2 then 'b'",
+      "  else 'c'",
+      "end from t;",
+    ].join("\n");
+    const out = format(sql, defaultTemplate);
+    expect(out).toContain("-- first");
+    expect(out).toContain("-- second");
+    expect(commentCount(out)).toBe(2);
+  });
+
+  it("is idempotent with a comment before a WHEN branch", () => {
+    const sql = ["select case", "  -- studio", "  when x = 1 then 'a'", "  else 'b'", "end from t;"].join("\n");
+    const once = format(sql, defaultTemplate);
+    const twice = format(once, defaultTemplate);
+    expect(twice).toBe(once);
+  });
+});
+
+describe("format (parenthesized groups)", () => {
+  it("keeps a short function call's arguments inline regardless of lists.onePerLine", () => {
+    const sql = "select iff(a, b, c) from t;";
+    const out = format(sql, defaultTemplate);
+    expect(out).toContain("IFF(a, b, c)");
+  });
+
+  it("keeps a short IN (...) list inline", () => {
+    const sql = "select * from t where x in (1, 2, 3);";
+    const out = format(sql, defaultTemplate);
+    expect(out).toContain("IN (1, 2, 3)");
+  });
+
+  it("wraps a function call's arguments one per line when they overflow lineWidth", () => {
+    const args = Array.from({ length: 10 }, (_, i) => `some_reasonably_long_argument_name_${i}`);
+    const sql = `select some_function(${args.join(", ")}) from t;`;
+    const out = format(sql, defaultTemplate);
+    for (const line of out.split("\n")) {
+      expect(line.length).toBeLessThanOrEqual(defaultTemplate.style.lineWidth);
+    }
+    expect(out).toContain("some_reasonably_long_argument_name_9\n");
+  });
+
+  it("wraps a long IN (...) list one per line when it overflows lineWidth", () => {
+    const values = Array.from({ length: 15 }, (_, i) => `'some_reasonably_long_value_${i}'`);
+    const sql = `select * from t where x in (${values.join(", ")});`;
+    const out = format(sql, defaultTemplate);
+    for (const line of out.split("\n")) {
+      expect(line.length).toBeLessThanOrEqual(defaultTemplate.style.lineWidth);
+    }
+  });
+
+  it("is idempotent when a function call's arguments wrap", () => {
+    const args = Array.from({ length: 10 }, (_, i) => `some_reasonably_long_argument_name_${i}`);
+    const sql = `select some_function(${args.join(", ")}) from t;`;
+    const once = format(sql, defaultTemplate);
+    const twice = format(once, defaultTemplate);
+    expect(twice).toBe(once);
+  });
 });
 
 describe("format (JOIN)", () => {
@@ -279,5 +392,92 @@ describe("format (real-world fixture: financial-forecast-feed)", () => {
   it("keeps SELECT DISTINCT on the keyword line even when the column list wraps (regression)", () => {
     const out = format(sql, defaultTemplate);
     expect(out).not.toMatch(/\n\s*DISTINCT /);
+  });
+});
+
+describe("format (real-world fixture: persona-product-activity-subscription)", () => {
+  const fixturePath = new URL("./__fixtures__/persona-product-activity-subscription.sql", import.meta.url);
+  const sql = readFileSync(fixturePath, "utf8");
+
+  it("preserves every comment when formatting with the default template", () => {
+    const out = format(sql, defaultTemplate);
+    expect(commentCount(out)).toBe(commentCount(sql));
+  });
+
+  it("preserves every comment when formatting with the compact template", () => {
+    const out = format(sql, compactTemplate);
+    expect(commentCount(out)).toBe(commentCount(sql));
+  });
+
+  it("is idempotent on the real-world fixture", () => {
+    const once = format(sql, defaultTemplate);
+    const twice = format(once, defaultTemplate);
+    expect(twice).toBe(once);
+  });
+
+  it("is still idempotent on a second reformat pass (regression: comment on a wrapped chain operator)", () => {
+    const once = format(sql, defaultTemplate);
+    const twice = format(once, defaultTemplate);
+    const thrice = format(twice, defaultTemplate);
+    expect(thrice).toBe(twice);
+  });
+
+  it("produces syntactically balanced parentheses", () => {
+    const out = format(sql, defaultTemplate);
+    const opens = (out.match(/\(/g) ?? []).length;
+    const closes = (out.match(/\)/g) ?? []).length;
+    expect(opens).toBe(closes);
+  });
+
+  it("wraps the long +-chained SELECT items instead of leaving 700+ char lines (regression)", () => {
+    // A few atomic NVL(NULLIF(...)) calls with long identifiers and no +/-
+    // to split on legitimately exceed lineWidth by a bit (a separate,
+    // pre-existing gap: no wrapping inside function-call arguments) — this
+    // just guards against the +/- chains regressing back to one giant line.
+    const out = format(sql, defaultTemplate);
+    const maxLineLength = Math.max(...out.split("\n").map((line) => line.length));
+    expect(maxLineLength).toBeLessThan(150);
+  });
+});
+
+describe("format (real-world fixture: daily-status-unpivot)", () => {
+  const fixturePath = new URL("./__fixtures__/daily-status-unpivot.sql", import.meta.url);
+  const sql = readFileSync(fixturePath, "utf8");
+
+  it("preserves every comment when formatting with the default template", () => {
+    const out = format(sql, defaultTemplate);
+    expect(commentCount(out)).toBe(commentCount(sql));
+  });
+
+  it("preserves every comment when formatting with the compact template", () => {
+    const out = format(sql, compactTemplate);
+    expect(commentCount(out)).toBe(commentCount(sql));
+  });
+
+  it("preserves the comments inside CASE/WHEN blocks specifically (regression)", () => {
+    const out = format(sql, defaultTemplate);
+    expect(out).toContain("-- Studio");
+    expect(out).toContain("-- Distribution");
+    expect(out).toContain("-- Reason");
+    expect(out).toContain("-- Standalone products have no sub-plans");
+  });
+
+  it("is idempotent on the real-world fixture", () => {
+    const once = format(sql, defaultTemplate);
+    const twice = format(once, defaultTemplate);
+    expect(twice).toBe(once);
+  });
+
+  it("produces syntactically balanced parentheses", () => {
+    const out = format(sql, defaultTemplate);
+    const opens = (out.match(/\(/g) ?? []).length;
+    const closes = (out.match(/\)/g) ?? []).length;
+    expect(opens).toBe(closes);
+  });
+
+  it("wraps the long UNPIVOT column list and IN (...) list instead of one giant line (regression)", () => {
+    const out = format(sql, defaultTemplate);
+    const maxLineLength = Math.max(...out.split("\n").map((line) => line.length));
+    expect(maxLineLength).toBeLessThan(150);
   });
 });
