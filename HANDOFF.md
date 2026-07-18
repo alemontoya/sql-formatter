@@ -8,14 +8,19 @@ the user drives architecture/product decisions and reviews output.
 
 ## Where things stand
 
-The **style-template schema** and the **core formatting engine** (tokenizer +
-layout/printer) are built and working. Nothing beyond the core package exists
-yet — no CLI wrapper, no web UI, no VS Code extension, no DBeaver integration.
+The **style-template schema**, the **core formatting engine** (tokenizer +
+layout/printer), and a **CLI wrapper** (`sql-format`) are built and working.
+No web UI, VS Code extension, or DBeaver integration yet.
 
 Read `templates/default.json` and `templates/compact.json` for what a style
 template looks like, and skim `core/src/format.ts` top-to-bottom — it's the
 15-line entry point that ties the whole pipeline together and is the fastest
 way to understand the architecture.
+
+The repo is an **npm workspace** (`package.json` at the root lists
+`["core", "cli"]`) so `cli` can depend on `@sql-formatter/core` directly
+instead of publishing it. Run `npm install` from the repo root, not inside
+`core/` or `cli/`.
 
 ## Architecture decisions (with reasoning — don't re-litigate without cause)
 
@@ -64,10 +69,12 @@ way to understand the architecture.
 ## Repo layout
 
 ```
+package.json                        — npm workspaces root: ["core", "cli"]
 schema/style-template.schema.json   — JSON Schema for style templates (flat, non-per-clause — deferred per-clause overrides to a later version)
 templates/default.json              — conventional readable style (uppercase keywords, one-per-line lists)
 templates/compact.json              — minimal wrapping, lowercase keywords
 core/src/
+  index.ts             — package entry point: re-exports format() + StyleTemplate
   types.ts            — Token, Dialect types
   keywords.ts          — SQL keyword set used for casing/clause classification
   tokenizer.ts          — lossless tokenizer (concatenating all token values reproduces the exact input)
@@ -81,6 +88,10 @@ core/src/
   try.ts               — dev utility: `npx tsx src/try.ts <template.json> <file.sql>` prints formatted output, not part of the build
   __fixtures__/snowflake-plan-cycles.sql — a real user script, used as a regression-test fixture (59 comments, heavy CASE/window-function usage)
   format.test.ts        — printer-level tests: exact output, idempotency, comment-count parity, balanced parens
+cli/src/
+  index.ts             — shebang entry point (`#!/usr/bin/env node`), just calls run(process.argv.slice(2))
+  cli.ts               — the actual CLI logic (arg parsing, template resolution, stdin/file I/O), exports run() for testing
+  cli.test.ts           — integration tests: spawns the CLI via `npx tsx src/index.ts` and asserts on stdout/stderr/exit code
 ```
 
 ## Environment gotchas
@@ -95,8 +106,35 @@ core/src/
   ```bash
   export NVM_DIR="$HOME/.nvm" && \. "$NVM_DIR/nvm.sh"
   ```
-- Build: `cd core && npm run build` (tsc). Test: `npx vitest run`. Both need
-  the nvm sourcing above first.
+- Install (from repo root, not inside `core/` or `cli/`): `npm install`.
+- Build: `npm run build -w core` / `npm run build -w cli` (tsc). Test:
+  `npx vitest run` from inside `core/` or `cli/`. All need the nvm sourcing
+  above first.
+
+## The CLI (`cli/`)
+
+`sql-format [options] [file]` — reads SQL from a file argument or stdin,
+writes formatted SQL to stdout (or back to the file with `--write`).
+
+```
+-t, --template <name|path>   "default" or "compact" (bundled), or a path to
+                              a style-template JSON file. Defaults to "default".
+-w, --write                   Overwrite the input file in place (requires a file arg).
+-c, --check                   Exit 1 if input isn't already formatted; no output.
+-h, --help
+```
+
+Bundled template names resolve to `templates/<name>.json` at the repo root
+via a relative `import.meta.url` lookup (`resolveTemplatePath()` in
+`cli.ts`) — this only works because the CLI lives inside this monorepo next
+to `templates/`. If the CLI is ever packaged/published standalone, bundled
+templates will need to be copied into the `cli` package (or fetched from the
+planned central template repo) rather than reached via `../../templates/`.
+
+Run without building via `npx tsx cli/src/index.ts <args>` (used by
+`cli.test.ts`, which spawns the CLI as a real subprocess and asserts on
+stdout/stderr/exit code rather than unit-testing `run()` in-process, since
+`run()` calls `process.exit()` directly on error paths).
 
 ## Confirmed formatting rules worth knowing before touching the printer
 
@@ -156,8 +194,8 @@ added to `KEYWORDS`.
 1. Decide on and implement true blank-line preservation, if it turns out to
    matter in practice.
 2. Start on the "format like this example" style-inference feature.
-3. CLI wrapper around `core/src/format.ts` — currently the only way to run
-   it is the `try.ts` dev script.
+3. Consider whether the CLI needs a way to format multiple files at once
+   (e.g. a glob argument) — v1 only takes a single file or stdin.
 
 ## JOIN/CTE test coverage (added, with real bugs found and fixed)
 
