@@ -47,6 +47,13 @@ describe("format", () => {
     expect(out).not.toContain("WHERE\n");
   });
 
+  it("does not uppercase the table name in INSERT INTO t (columns) as if it were a function call", () => {
+    const sql = "insert into t (a) values (1) returning a;";
+    const out = format(sql, defaultTemplate);
+    expect(out).toContain("INSERT INTO t (a)");
+    expect(out).not.toContain("T(a)");
+  });
+
   it("keeps short lists inline for the compact template", () => {
     const sql = "select id, name, email from users;";
     const out = format(sql, compactTemplate);

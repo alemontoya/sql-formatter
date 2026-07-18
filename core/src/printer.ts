@@ -131,7 +131,20 @@ function renderLeafText(leaf: Leaf, kind: "keyword" | "function" | "type" | "ide
   }
 }
 
-export function classifyLeaf(nodes: Node[], idx: number): "keyword" | "function" | "type" | "identifier" | "raw" {
+/**
+ * `nodes` is the leaf/group sequence a single leaf is classified against —
+ * usually a clause's body, which has already had its leading keyword(s)
+ * (e.g. "INSERT INTO") split off by `splitClauses`. `bodyStartsAtTableRef`
+ * tells classifyLeaf that `nodes[0]`, if present, sits in table-ref position
+ * (right after a keyword like INTO/TABLE that was split off) so a
+ * `name (columns)` at index 0 is a table name + column list, not a function
+ * call — the two are indistinguishable from the node sequence alone.
+ */
+export function classifyLeaf(
+  nodes: Node[],
+  idx: number,
+  bodyStartsAtTableRef = false,
+): "keyword" | "function" | "type" | "identifier" | "raw" {
   const node = nodes[idx];
   if (node.kind !== "leaf") return "raw";
   const { token } = node.leaf;
@@ -143,7 +156,7 @@ export function classifyLeaf(nodes: Node[], idx: number): "keyword" | "function"
     return "type";
   }
   const next = nodes[idx + 1];
-  if (next && next.kind === "group") return "function";
+  if (next && next.kind === "group" && !(idx === 0 && bodyStartsAtTableRef)) return "function";
   return "identifier";
 }
 
@@ -192,7 +205,7 @@ type Token_ = Leaf["leadingComments"][number];
  * for CASE/WHEN/END blocks, which always break onto multiple lines since
  * that's the only way they stay readable.
  */
-function printSeq(nodes: Node[], level: number, ctx: Ctx): string {
+function printSeq(nodes: Node[], level: number, ctx: Ctx, bodyStartsAtTableRef = false): string {
   const b = new Builder();
 
   for (let idx = 0; idx < nodes.length; idx++) {
@@ -225,14 +238,14 @@ function printSeq(nodes: Node[], level: number, ctx: Ctx): string {
     }
 
     if (node.kind === "group") {
-      const isCallArgs = idx > 0 && classifyLeaf(nodes, idx - 1) === "function";
+      const isCallArgs = idx > 0 && classifyLeaf(nodes, idx - 1, bodyStartsAtTableRef) === "function";
       b.text(printGroup(node, level, ctx), isCallArgs);
       const trailing = node.close.trailingComment;
       if (trailing) b.text(trailing.value);
       continue;
     }
 
-    const kind = classifyLeaf(nodes, idx);
+    const kind = classifyLeaf(nodes, idx, bodyStartsAtTableRef);
     const text = renderLeafText(node.leaf, kind, ctx);
     if (isIndexBracket(nodes, idx)) {
       b.text(text, true);
@@ -588,7 +601,7 @@ function printClauseBody(clause: Clause, level: number, ctx: Ctx): string {
   if (clause.keyword.endsWith("JOIN")) {
     return printJoin(clause.body, level, ctx);
   }
-  return printSeq(clause.body, level, ctx);
+  return printSeq(clause.body, level, ctx, clause.keyword === "INSERT INTO");
 }
 
 /** Prints one CTE item ("name AS (subquery)") for keywordAlign mode: the
