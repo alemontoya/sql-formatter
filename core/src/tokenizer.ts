@@ -2,7 +2,7 @@ import { isKeyword } from "./keywords.js";
 import type { Token } from "./types.js";
 
 const MULTI_CHAR_OPERATORS = [
-  "::", "->>", "->", "!=", "<>", "<=", ">=", "||", "~~", "!~", ":=",
+  "::", "->>", "->", "!=", "<>", "<=", ">=", "||", "~~", "!~", ":=", "=>",
 ].sort((a, b) => b.length - a.length);
 
 const SINGLE_CHAR_PUNCTUATION = new Set(["(", ")", ",", ".", ";"]);

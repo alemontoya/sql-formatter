@@ -272,6 +272,26 @@ its own line). It contains real business schema/column names (customer IDs,
 subscription internals, discount logic) — still ask before adding another
 file like it, this one just happened to get explicit sign-off.
 
+## Bug found formatting a Snowflake LATERAL FLATTEN snippet (fixed)
+
+The user tried a smaller script using Snowflake's named-argument syntax
+(`LATERAL FLATTEN(INPUT => ..., OUTER => TRUE)`). The tokenizer had no entry
+for `=>` in `MULTI_CHAR_OPERATORS` (`tokenizer.ts`), so it fell through to
+single-char operator scanning and split it into separate `=` and `>` tokens
+— which the printer then spaced independently, corrupting valid syntax into
+`INPUT = > PARSE_JSON(...)`. Fixed by adding `"=>"` to
+`MULTI_CHAR_OPERATORS`; no printer changes were needed since normal
+binary-operator spacing (space on both sides) is exactly right for `=>`.
+Regression tests added in both `tokenizer.test.ts` (asserts `=>` tokenizes
+as one token, not `=` + `>`) and `format.test.ts`.
+
+This is the same failure shape as the unary-minus bug: a token got treated
+generically by a codepath that assumed a fixed, closed set of operators.
+Worth scanning `MULTI_CHAR_OPERATORS` against real scripts before assuming
+dialect-specific operators are covered — nothing currently distinguishes
+"generic" from "postgres"/"snowflake"/"sqlite" operator sets, so anything
+dialect-specific has to be manually added and manually noticed missing.
+
 Also confirmed working correctly with no changes needed: `USING (...)` joins
 (no `ON` clause), `RECURSIVE` CTE keyword placement, chains of 3+ single-
 condition joins (each stays inline per the general "no internal newline ⇒

@@ -80,6 +80,14 @@ describe("format", () => {
     const out = format(sql, defaultTemplate);
     expect(out).toContain("SELECT DISTINCT id");
   });
+
+  it("preserves Snowflake's named-argument => operator without splitting into = >", () => {
+    const sql = "select * from t, lateral flatten(INPUT => parse_json(t.x), outer => TRUE) as f;";
+    const out = format(sql, defaultTemplate);
+    expect(out).toContain("INPUT => PARSE_JSON(t.x)");
+    expect(out).toContain("OUTER => TRUE");
+    expect(out).not.toContain("= >");
+  });
 });
 
 describe("format (JOIN)", () => {

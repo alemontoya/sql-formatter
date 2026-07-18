@@ -49,6 +49,14 @@ describe("tokenize", () => {
     const tokens = tokenize('"select"');
     expect(tokens[0].type).toBe("quotedIdentifier");
   });
+
+  it("tokenizes Snowflake's named-argument => as a single operator, not = then >", () => {
+    const tokens = tokenize("FLATTEN(INPUT => x)").filter((t) => t.type !== "eof");
+    const opValues = tokens.filter((t) => t.type === "operator").map((t) => t.value);
+    expect(opValues).toContain("=>");
+    expect(opValues).not.toContain("=");
+    expect(opValues).not.toContain(">");
+  });
 });
 
 describe("tokenize (real-world fixture)", () => {
