@@ -153,10 +153,43 @@ added to `KEYWORDS`.
 
 ## Suggested next steps
 
-1. Exercise the JOIN and WITH/CTE paths against real examples (the fixture
-   used so far has neither) — they're implemented but only lightly tested.
-2. Decide on and implement true blank-line preservation, if it turns out to
+1. Decide on and implement true blank-line preservation, if it turns out to
    matter in practice.
-3. Start on the "format like this example" style-inference feature.
-4. CLI wrapper around `core/src/format.ts` — currently the only way to run
+2. Start on the "format like this example" style-inference feature.
+3. CLI wrapper around `core/src/format.ts` — currently the only way to run
    it is the `try.ts` dev script.
+
+## JOIN/CTE test coverage (added, with real bugs found and fixed)
+
+Exercised the JOIN and WITH/CTE printer paths against real examples — 11 new
+tests in `format.test.ts` (`describe("format (JOIN)")` /
+`describe("format (WITH / CTEs)")`). This surfaced three bugs, now fixed:
+
+1. **Multiple CTEs rendered with no comma between them** — `WITH a AS (...)
+   b AS (...)` is invalid SQL. `printCtes()` split on top-level commas but
+   never put them back. Fixed by re-inserting `,` before each item after the
+   first in `printCtes()` (`printer.ts`).
+2. **`ctes.onePerLine` was dead code** — defined in the schema, set
+   differently by both templates, but never read anywhere in the printer
+   (only `ctes.blankLineBetween` was). Since CTE subquery bodies are always
+   forced multi-line (`printGroup`'s `isSubquery` branch), the flag had no
+   observable effect for any realistic query — it only becomes visible with
+   trivial non-`SELECT` CTE bodies (e.g. `VALUES`). Fixed: `printCtes()` now
+   packs CTEs onto one line when `onePerLine` is false and they fit within
+   `lineWidth`.
+3. **Multi-condition `ON` clauses over-indented by one level.** `printJoin()`
+   was adding `joins.multiConditionIndent` to the level passed into
+   `printBooleanChain()`, which then *also* added its own `+1` internally
+   when `booleanOperators.indentContinuation` was true — the two knobs
+   stacked. `multiConditionIndent` is meant to be the sole, dedicated control
+   for how far a wrapped `ON` chain indents past the join line (WHERE/HAVING
+   is the only place `indentContinuation` should apply, since those clauses
+   always start their chain on a fresh line). Fixed by giving
+   `printBooleanChain()` an optional explicit `continuationLevel` parameter
+   that `printJoin()` now always supplies, bypassing the
+   `indentContinuation`-driven default.
+
+Also confirmed working correctly with no changes needed: `USING (...)` joins
+(no `ON` clause), `RECURSIVE` CTE keyword placement, chains of 3+ single-
+condition joins (each stays inline per the general "no internal newline ⇒
+stays on keyword's line" rule), and idempotency on multi-CTE queries.

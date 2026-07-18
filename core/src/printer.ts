@@ -313,11 +313,11 @@ function splitBooleanChain(nodes: Node[]): { op: "AND" | "OR" | null; nodes: Nod
   return result.filter((c) => c.nodes.length > 0);
 }
 
-function printBooleanChain(nodes: Node[], level: number, ctx: Ctx): string {
+function printBooleanChain(nodes: Node[], level: number, ctx: Ctx, continuationLevel?: number): string {
   const conditions = splitBooleanChain(nodes);
   if (conditions.length === 1) return printSeq(conditions[0].nodes, level, ctx);
 
-  const contLevel = ctx.style.booleanOperators.indentContinuation ? level + 1 : level;
+  const contLevel = continuationLevel ?? (ctx.style.booleanOperators.indentContinuation ? level + 1 : level);
   const b = new Builder();
   conditions.forEach((cond, i) => {
     const text = printSeq(cond.nodes, contLevel, ctx);
@@ -380,10 +380,17 @@ function printCtes(body: Node[], level: number, ctx: Ctx): string {
   const items = splitTopLevelCommas(nodes);
   const printedItems = items.map((item) => printSeq(item, level, ctx));
 
+  if (!ctx.style.ctes.onePerLine && printedItems.length > 1) {
+    const inline = printedItems.join(", ");
+    const fits = !inline.includes("\n") && indentStr(ctx, level).length + prefix.length + inline.length <= ctx.style.lineWidth;
+    if (fits) return prefix + inline;
+  }
+
   const b = new Builder();
   b.raw(prefix);
   printedItems.forEach((text, i) => {
     if (i > 0) {
+      b.raw(",");
       b.newline(ctx, level);
       if (ctx.style.ctes.blankLineBetween) b.newline(ctx, level);
     }
@@ -401,12 +408,18 @@ function printJoin(body: Node[], level: number, ctx: Ctx): string {
   b.raw(printSeq(tableRef, level, ctx));
   if (onIdx !== -1) {
     const onKeyword = applyCasing("ON", ctx.style.casing.keywords);
-    const conditionLevel = level + ctx.style.joins.multiConditionIndent;
+    // The ON condition's own line sits at `conditionLevel`; a wrapped
+    // multi-condition chain indents `multiConditionIndent` levels past that
+    // — a dedicated knob, not stacked with booleanOperators.indentContinuation
+    // (which governs WHERE/HAVING, where the chain starts on its own line).
     if (ctx.style.joins.onClausePlacement === "sameLine") {
-      b.raw(" " + onKeyword + " " + printBooleanChain(condition, conditionLevel, ctx));
+      const continuationLevel = level + ctx.style.joins.multiConditionIndent;
+      b.raw(" " + onKeyword + " " + printBooleanChain(condition, level, ctx, continuationLevel));
     } else {
-      b.newline(ctx, level + 1);
-      b.raw(onKeyword + " " + printBooleanChain(condition, conditionLevel, ctx));
+      const conditionLevel = level + 1;
+      const continuationLevel = conditionLevel + ctx.style.joins.multiConditionIndent;
+      b.newline(ctx, conditionLevel);
+      b.raw(onKeyword + " " + printBooleanChain(condition, conditionLevel, ctx, continuationLevel));
     }
   }
   return b.out;
