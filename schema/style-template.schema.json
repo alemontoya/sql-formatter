@@ -61,6 +61,7 @@
       "type": "object",
       "description": "The actual formatting rules. Flat: one setting per concern, applied uniformly across the whole script (no per-clause overrides yet).",
       "required": [
+        "layout",
         "casing",
         "indentation",
         "lineWidth",
@@ -78,6 +79,18 @@
       ],
       "additionalProperties": false,
       "properties": {
+        "layout": {
+          "type": "object",
+          "required": ["mode"],
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": ["indent", "keywordAlign"],
+              "description": "\"indent\": level-based indentation (indentation.char/size per nesting level). \"keywordAlign\": clause keywords (SELECT/FROM/WHERE/JOIN/ON/AND/...) are right-padded so their last character lines up in a shared column per statement/subquery scope (\"river style\"); indentation.char/size is still used for nesting within that scope (CASE/WHEN, nested groups)."
+            }
+          }
+        },
         "casing": {
           "type": "object",
           "required": ["keywords", "functions", "types", "identifiers"],

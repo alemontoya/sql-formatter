@@ -10,6 +10,7 @@ export interface StyleTemplate {
   extends?: string | null;
   source: { type: "manual" | "inferred"; confidence?: Record<string, number> };
   style: {
+    layout: { mode: "indent" | "keywordAlign" };
     casing: {
       keywords: CasingRule;
       functions: CasingRule;

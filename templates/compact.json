@@ -10,6 +10,9 @@
     "type": "manual"
   },
   "style": {
+    "layout": {
+      "mode": "indent"
+    },
     "casing": {
       "keywords": "lower",
       "functions": "lower",

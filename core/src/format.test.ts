@@ -12,6 +12,10 @@ const compactTemplate = JSON.parse(
   readFileSync(new URL("../../templates/compact.json", import.meta.url), "utf8")
 ) as StyleTemplate;
 
+const riverTemplate = JSON.parse(
+  readFileSync(new URL("../../templates/river.json", import.meta.url), "utf8")
+) as StyleTemplate;
+
 function commentCount(sql: string): number {
   return tokenize(sql).filter((t) => t.type === "lineComment" || t.type === "blockComment").length;
 }
@@ -503,6 +507,107 @@ describe("format (real-world fixture: daily-status-unpivot)", () => {
     expect(maxLineLength).toBeLessThan(150);
   });
 });
+
+describe("format (keywordAlign layout)", () => {
+  it("right-aligns SELECT/FROM/WHERE to a shared column", () => {
+    const sql = "select id, name from users where active = true;";
+    expect(format(sql, riverTemplate)).toBe(
+      ["SELECT id, name", "  FROM users", " WHERE active = true;", ""].join("\n")
+    );
+  });
+
+  it("right-aligns JOIN/ON and a wrapped multi-condition AND to the same column", () => {
+    const sql = "select a.id, b.name from a join b on a.id = b.id and a.x = b.x where a.active = true;";
+    expect(format(sql, riverTemplate)).toBe(
+      [
+        "SELECT a.id, b.name",
+        "  FROM a",
+        "  JOIN b",
+        "    ON a.id = b.id",
+        "   AND a.x = b.x",
+        " WHERE a.active = true;",
+        "",
+      ].join("\n")
+    );
+  });
+
+  it("right-pads WITH and glues the CTE name to it, with the subquery on its own line", () => {
+    const sql = "with t as (select id from users) select id from t;";
+    expect(format(sql, riverTemplate)).toBe(
+      ["WITH   t AS", "       (SELECT id", "          FROM users", "       )", "SELECT id", "  FROM t;", ""].join(
+        "\n"
+      )
+    );
+  });
+
+  it("computes the shared column dynamically from whichever keywords are actually present, not a fixed width", () => {
+    // Only WHERE(5)/RETURNING(9) are in this scope (DELETE FROM is a
+    // preamble, excluded from the family) — RETURNING is wider than WHERE,
+    // so WHERE must right-pad out further than its own 5 characters to
+    // match RETURNING's width, not some hardcoded SELECT-sized column.
+    const sql = "delete from t where id = 1 returning id;";
+    expect(format(sql, riverTemplate)).toBe(["DELETE FROM t", "WHERE     id = 1", "RETURNING id;", ""].join("\n"));
+  });
+
+  it("aligns JOIN variants (LEFT JOIN, CROSS JOIN) to FROM's column, not their own length", () => {
+    const sql = "select a.id from a left join b on a.id = b.id cross join c;";
+    expect(format(sql, riverTemplate)).toBe(
+      ["SELECT a.id", "  FROM a", "  LEFT JOIN b", "    ON a.id = b.id", "  CROSS JOIN c;", ""].join("\n")
+    );
+  });
+
+  it("is idempotent", () => {
+    const sql =
+      "with t as (select a, b from x where a > 1 and b < 2) select id, name from t join y on t.id = y.id where active = true;";
+    const once = format(sql, riverTemplate);
+    const twice = format(once, riverTemplate);
+    expect(twice).toBe(once);
+  });
+
+  it("indents CASE/WHEN/END from the aligned content column, not from column zero", () => {
+    const sql = "select case when a = 1 then 'x' else 'y' end as col from t;";
+    expect(format(sql, riverTemplate)).toBe(
+      [
+        "SELECT CASE",
+        "         WHEN a = 1 THEN 'x'",
+        "         ELSE 'y'",
+        "       END AS col",
+        "  FROM t;",
+        "",
+      ].join("\n")
+    );
+  });
+});
+
+for (const fixtureName of [
+  "learning-active-users-subscriptions",
+  "snowflake-plan-cycles",
+  "financial-forecast-feed",
+  "persona-product-activity-subscription",
+]) {
+  describe(`format (keywordAlign layout, real-world fixture: ${fixtureName})`, () => {
+    const fixturePath = new URL(`./__fixtures__/${fixtureName}.sql`, import.meta.url);
+    const sql = readFileSync(fixturePath, "utf8");
+
+    it("preserves every comment", () => {
+      const out = format(sql, riverTemplate);
+      expect(commentCount(out)).toBe(commentCount(sql));
+    });
+
+    it("is idempotent", () => {
+      const once = format(sql, riverTemplate);
+      const twice = format(once, riverTemplate);
+      expect(twice).toBe(once);
+    });
+
+    it("produces syntactically balanced parentheses", () => {
+      const out = format(sql, riverTemplate);
+      const opens = (out.match(/\(/g) ?? []).length;
+      const closes = (out.match(/\)/g) ?? []).length;
+      expect(opens).toBe(closes);
+    });
+  });
+}
 
 describe("format (real-world fixture: learning-active-users-subscriptions)", () => {
   const fixturePath = new URL("./__fixtures__/learning-active-users-subscriptions.sql", import.meta.url);

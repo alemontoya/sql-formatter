@@ -89,3 +89,79 @@ describe("sql-format CLI", () => {
     expect(stderr).toContain("Template not found");
   });
 });
+
+describe("sql-format infer", () => {
+  it("writes an inferred style-template JSON to stdout", () => {
+    const file = tempSqlFile(["SELECT id, name", "  FROM users", " WHERE active = true;", ""].join("\n"));
+    const { stdout, status } = runCli(["infer", file, "--id", "jane", "--name", "Jane"]);
+    expect(status).toBe(0);
+    const template = JSON.parse(stdout);
+    expect(template.id).toBe("jane");
+    expect(template.name).toBe("Jane");
+    expect(template.source.type).toBe("inferred");
+    expect(template.style.layout.mode).toBe("keywordAlign");
+  });
+
+  it("defaults dialect to generic and accepts an explicit one", () => {
+    const file = tempSqlFile("select id from t;");
+    const generic = JSON.parse(runCli(["infer", file, "--id", "a", "--name", "A"]).stdout);
+    expect(generic.dialect).toBe("generic");
+    const snowflake = JSON.parse(
+      runCli(["infer", file, "--id", "a", "--name", "A", "--dialect", "snowflake"]).stdout
+    );
+    expect(snowflake.dialect).toBe("snowflake");
+  });
+
+  it("-o writes the template to a file instead of stdout", () => {
+    const file = tempSqlFile("select id from t;");
+    const outDir = mkdtempSync(join(tmpdir(), "sql-format-infer-out-"));
+    const outPath = join(outDir, "out.json");
+    const { stdout, status } = runCli(["infer", file, "--id", "a", "--name", "A", "-o", outPath]);
+    expect(status).toBe(0);
+    expect(stdout).toBe("");
+    const template = JSON.parse(readFileSync(outPath, "utf8"));
+    expect(template.id).toBe("a");
+  });
+
+  it("prints low-confidence field warnings to stderr", () => {
+    const file = tempSqlFile("select id from t;");
+    const { stderr } = runCli(["infer", file, "--id", "a", "--name", "A"]);
+    expect(stderr).toContain("low confidence");
+  });
+
+  it("requires --id and --name", () => {
+    const file = tempSqlFile("select id from t;");
+    const { stderr, status } = runCli(["infer", file]);
+    expect(status).toBe(2);
+    expect(stderr).toContain("requires --id and --name");
+  });
+
+  it("requires an example file", () => {
+    const { stderr, status } = runCli(["infer", "--id", "a", "--name", "A"]);
+    expect(status).toBe(2);
+    expect(stderr).toContain("requires an example file");
+  });
+
+  it("errors on a missing example file", () => {
+    const { stderr, status } = runCli(["infer", "/no/such/file.sql", "--id", "a", "--name", "A"]);
+    expect(status).toBe(2);
+    expect(stderr).toContain("Example file not found");
+  });
+
+  it("rejects an unknown dialect", () => {
+    const file = tempSqlFile("select id from t;");
+    const { stderr, status } = runCli(["infer", file, "--id", "a", "--name", "A", "--dialect", "mysql"]);
+    expect(status).toBe(2);
+    expect(stderr).toContain("Unknown dialect: mysql");
+  });
+
+  it("the inferred template is directly usable to format SQL", () => {
+    const file = tempSqlFile(["SELECT id, name", "  FROM users", " WHERE active = true;", ""].join("\n"));
+    const outDir = mkdtempSync(join(tmpdir(), "sql-format-infer-out-"));
+    const outPath = join(outDir, "out.json");
+    runCli(["infer", file, "--id", "a", "--name", "A", "-o", outPath]);
+    const { stdout, status } = runCli(["--template", outPath], "select id, name from users where active = true;");
+    expect(status).toBe(0);
+    expect(stdout).toContain("SELECT id, name");
+  });
+});

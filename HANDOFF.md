@@ -9,13 +9,16 @@ the user drives architecture/product decisions and reviews output.
 ## Where things stand
 
 The **style-template schema**, the **core formatting engine** (tokenizer +
-layout/printer), and a **CLI wrapper** (`sql-format`) are built and working.
-No web UI, VS Code extension, or DBeaver integration yet.
+layout/printer, including a "river style" keyword-alignment layout mode), a
+**rule-based style-inference engine**, and a **CLI wrapper** (`sql-format`,
+now with an `infer` subcommand) are built and working. No web UI, VS Code
+extension, or DBeaver integration yet.
 
-Read `templates/default.json` and `templates/compact.json` for what a style
-template looks like, and skim `core/src/format.ts` top-to-bottom — it's the
-15-line entry point that ties the whole pipeline together and is the fastest
-way to understand the architecture.
+Read `templates/default.json`, `templates/compact.json`, and
+`templates/river.json` for what a style template looks like, and skim
+`core/src/format.ts` top-to-bottom — it's the 15-line entry point that ties
+the whole pipeline together and is the fastest way to understand the
+architecture.
 
 The repo is an **npm workspace** (`package.json` at the root lists
 `["core", "cli"]`) so `cli` can depend on `@sql-formatter/core` directly
@@ -55,26 +58,37 @@ instead of publishing it. Run `npm install` from the repo root, not inside
   so the core builds its own lossless tokenizer instead and formats directly
   off the token stream — comments/whitespace are repositioned, never
   discarded by a lossy AST round-trip.
-- **The "format like this example" feature** (paste an already-formatted
-  script, have the tool learn/replicate that style) is a planned but
-  **not-yet-started** feature. Design intent: hybrid of (1) rule-based style
-  inference — parse the example, diff against canonical renderings to back
-  out discrete style-template parameters, deterministic — as the primary
-  approach, with (2) LLM/pattern-based fallback for idiosyncratic styles that
-  don't reduce to clean rules. The `style-template.schema.json`'s `source`
-  field (`type: "manual" | "inferred"` + per-field `confidence`) is the hook
-  for this — an inferred template should come out shaped exactly like a
-  manual one.
+- **The "format like this example" feature is now built** — `core/src/infer.ts`
+  (`inferStyleTemplate()`) plus the CLI's `infer` subcommand. Originally
+  scoped as a hybrid of (1) rule-based inference and (2) an LLM/pattern
+  fallback for idiosyncratic styles; **(2) was deliberately dropped for v1**,
+  decided with the user after analyzing the real fixtures (see the dated
+  section below) — every real style found so far reduces to clean rules once
+  the schema/printer can express it, and adding an LLM dependency would cut
+  against the local-first/no-external-API principle above for no
+  demonstrated benefit yet. Revisit only if a genuinely rule-resistant style
+  shows up. The `style-template.schema.json`'s `source` field
+  (`type: "manual" | "inferred"` + per-field `confidence`) is populated
+  exactly as originally planned — one confidence score per style field, keyed
+  by dotted path.
+- **"River style" keyword-alignment layout** (`style.layout.mode:
+  "keywordAlign"`) is a second layout algorithm alongside the original
+  level-based indentation (`"indent"`), added specifically because the
+  user's actual dominant SQL style (4 of 5 real fixtures) uses it and the
+  original schema/printer had no way to express it at all. See the dated
+  section below for the algorithm and how it was reverse-engineered from
+  real examples.
 
 ## Repo layout
 
 ```
 package.json                        — npm workspaces root: ["core", "cli"]
 schema/style-template.schema.json   — JSON Schema for style templates (flat, non-per-clause — deferred per-clause overrides to a later version)
-templates/default.json              — conventional readable style (uppercase keywords, one-per-line lists)
-templates/compact.json              — minimal wrapping, lowercase keywords
+templates/default.json              — conventional readable style (uppercase keywords, one-per-line lists), layout.mode: "indent"
+templates/compact.json              — minimal wrapping, lowercase keywords, layout.mode: "indent"
+templates/river.json                — keyword-alignment ("river") style, layout.mode: "keywordAlign" — matches the user's actual dominant hand-written style
 core/src/
-  index.ts             — package entry point: re-exports format() + StyleTemplate
+  index.ts             — package entry point: re-exports format(), inferStyleTemplate(), StyleTemplate, InferOptions/InferResult, Dialect
   types.ts            — Token, Dialect types
   keywords.ts          — SQL keyword set used for casing/clause classification
   tokenizer.ts          — lossless tokenizer (concatenating all token values reproduces the exact input)
@@ -82,21 +96,23 @@ core/src/
   trivia.ts            — attaches comments to the token ("leaf") they belong next to (leading vs trailing)
   tree.ts              — builds a paren-nesting tree + splits top-level statements at `;`
   clauses.ts            — splits a statement's node sequence into clauses (SELECT/FROM/WHERE/JOIN/WITH/...)
-  printer.ts            — the actual layout engine: casing, indentation, list-wrapping, boolean chains, CASE blocks, JOIN/CTE printing
+  printer.ts            — the actual layout engine: casing, indentation, list-wrapping, boolean chains, CASE blocks, JOIN/CTE printing, and the keywordAlign ("river style") layout mode. Exports a few helpers (`classifyLeaf`, `splitTopLevelCommas`, `firstWord`, `canonicalFamilyWord`) purely so `infer.ts` can reuse them rather than re-implement the same classification logic.
   format.ts            — top-level `format(sql, template): string` entry point
   style-template.ts     — StyleTemplate TS type (mirrors the JSON schema) + applyCasing()
+  infer.ts              — `inferStyleTemplate(sql, options)`: rule-based "format like this example" — reads a SQL example's structure/whitespace and produces a best-effort StyleTemplate with per-field confidence. See the dated section below for the field-by-field approach and what's deliberately deferred.
+  infer.test.ts          — synthetic per-field tests, real-fixture layout-mode detection, and a round-trip smoke check (format with river.json, then infer from that output, confirm it recovers river.json's key fields)
   try.ts               — dev utility: `npx tsx src/try.ts <template.json> <file.sql>` prints formatted output, not part of the build
   __fixtures__/ — real user scripts, used as regression-test fixtures (see the dated bug-fix sections below for what each one caught):
-    snowflake-plan-cycles.sql (59 comments, heavy CASE/window-function usage)
-    financial-forecast-feed.sql
-    persona-product-activity-subscription.sql
-    daily-status-unpivot.sql
-    learning-active-users-subscriptions.sql
-  format.test.ts        — printer-level tests: exact output, idempotency, comment-count parity, balanced parens
+    snowflake-plan-cycles.sql (59 comments, heavy CASE/window-function usage) — river style
+    financial-forecast-feed.sql — river style
+    persona-product-activity-subscription.sql — river style
+    daily-status-unpivot.sql — plain indent-style block formatting; **Claude-authored, not the user's own style** — kept only as a regression fixture for the indent-mode default template, not a style signal
+    learning-active-users-subscriptions.sql — river style
+  format.test.ts        — printer-level tests: exact output, idempotency, comment-count parity, balanced parens, plus a `keywordAlign layout` describe block (synthetic + all 4 river fixtures)
 cli/src/
   index.ts             — shebang entry point (`#!/usr/bin/env node`), just calls run(process.argv.slice(2))
-  cli.ts               — the actual CLI logic (arg parsing, template resolution, stdin/file I/O), exports run() for testing
-  cli.test.ts           — integration tests: spawns the CLI via `npx tsx src/index.ts` and asserts on stdout/stderr/exit code
+  cli.ts               — the actual CLI logic: format-mode arg parsing/template resolution/stdin/file I/O, plus the `infer` subcommand (dispatched on `argv[0] === "infer"`, its own arg parser), exports run() for testing
+  cli.test.ts           — integration tests: spawns the CLI via `npx tsx src/index.ts` and asserts on stdout/stderr/exit code, including an `sql-format infer` describe block
 ```
 
 ## Environment gotchas
@@ -141,6 +157,19 @@ Run without building via `npx tsx cli/src/index.ts <args>` (used by
 stdout/stderr/exit code rather than unit-testing `run()` in-process, since
 `run()` calls `process.exit()` directly on error paths).
 
+### `sql-format infer` (style inference)
+
+```
+sql-format infer <example-file> --id <id> --name <name> [--dialect <dialect>] [--description <text>] [-o <output.json>]
+```
+
+Reads a SQL example already formatted in your own style, runs
+`inferStyleTemplate()`, and writes the resulting style-template JSON to
+stdout (or `-o <path>`). Low-confidence fields (< 0.4, defaulted from the
+bundled `default.json`) are listed on stderr so you know what to sanity-check
+by hand before using the template for real. `--id`/`--name` are required
+(everything else the schema needs); `--dialect` defaults to `"generic"`.
+
 ## Confirmed formatting rules worth knowing before touching the printer
 
 These came from reviewing real output against the user's actual SQL style,
@@ -171,15 +200,33 @@ not template-specific hacks:
 - `parentheses.subqueryOpenParenSameLine: false` isn't implemented (always
   behaves as `true`, which is what both current templates use anyway, so
   there's no visible gap yet — but it'll surface once someone sets it false).
+  **In `keywordAlign` mode this field is ignored entirely** — `printGroup`'s
+  align-mode branch always glues `(` to the subquery's first keyword,
+  regardless of this setting (see the river-style section below for why:
+  it's structurally required for the alignment column to be computable).
+  `inferStyleTemplate()` still infers a best-effort value for it from the
+  raw example text, but it has no effect on output once `layout.mode` is
+  `keywordAlign`.
 - No wrapping inside window-function `OVER(...)` clauses — they print as one
   long inline expression regardless of `lineWidth`.
-- `alignment.aliases` / `alignment.assignments` aren't implemented.
+- `alignment.aliases` / `alignment.assignments` aren't implemented. Also not
+  attempted by `inferStyleTemplate()` — always defaulted, 0 confidence.
 - A comment attached directly to a bare `;` (rare — a comment between the
   last real token and the semicolon) would currently be dropped, since
   `splitStatements()` in `tree.ts` discards the `;` leaf entirely rather
   than checking it for attached trivia.
-- `quoting.forceQuoteIdentifiers` isn't implemented (both templates have it
-  `false`, so untested).
+- `quoting.forceQuoteIdentifiers` isn't implemented in the printer (both
+  `default.json`/`compact.json` have it `false`, so untested there).
+  `inferStyleTemplate()` *does* infer a best-effort value for it (checks
+  whether any quoted identifier in the example didn't actually need
+  quoting), but — same as `subqueryOpenParenSameLine` above — inferring a
+  value for a field the printer doesn't act on yet is a no-op until someone
+  implements it.
+- `lists.wrapThresholdItems`, `commas.alignAfterComma`,
+  `joins.multiConditionIndent`, `booleanOperators.indentContinuation` are
+  **not attempted by `inferStyleTemplate()`** (always 0 confidence, value
+  copied from the base template passed in) — see the dated section below for
+  why each was judged too unreliable to infer from a single example.
 
 ## A specific bug class to remember
 
@@ -198,9 +245,22 @@ added to `KEYWORDS`.
 
 1. Decide on and implement true blank-line preservation, if it turns out to
    matter in practice.
-2. Start on the "format like this example" style-inference feature.
-3. Consider whether the CLI needs a way to format multiple files at once
+2. Consider whether the CLI needs a way to format multiple files at once
    (e.g. a glob argument) — v1 only takes a single file or stdin.
+3. Revisit `GROUP BY`/`ORDER BY`/`HAVING` alignment in `keywordAlign` mode
+   against more real examples if the dynamic-widening behavior (see the
+   river-style section below) ever looks wrong in practice — the fixtures
+   only exercised `GROUP BY`, never `HAVING`/`ORDER BY` wider than `SELECT`.
+4. An LLM/pattern-based fallback for `inferStyleTemplate()` was explicitly
+   deferred (see the river-style/inference section below) — only worth
+   picking up if a real example shows up whose style genuinely doesn't
+   reduce to the rule-based fields covered so far.
+5. Fix the known `classifyLeaf()` bug where an identifier immediately
+   followed by `(...)` gets misclassified as a function call and cased with
+   `casing.functions` instead of `casing.identifiers` — surfaced by
+   `INSERT INTO t (a) VALUES (1)` uppercasing `t` to `T` with the default
+   template. Unrelated to the river-style/inference work, just found in
+   passing while testing it.
 
 ## JOIN/CTE test coverage (added, with real bugs found and fixed)
 
@@ -452,3 +512,226 @@ case it is. 3 new synthetic tests cover indexing, chained indexing, and
 confirm the bracket-identifier case didn't regress. The triggering script
 is a fifth committed fixture:
 `core/src/__fixtures__/learning-active-users-subscriptions.sql`.
+
+## "River style" keyword-alignment layout + rule-based style inference (new feature)
+
+Before starting the planned "format like this example" style-inference
+feature, analyzed all 5 real fixtures to check whether the user's actual
+coding style reduces to clean rules under the existing schema. Finding: 4 of
+5 (`learning-active-users-subscriptions`, `snowflake-plan-cycles`,
+`financial-forecast-feed`, `persona-product-activity-subscription`)
+consistently use **"river style"** — clause keywords right-pad to a shared
+column, e.g.:
+
+```sql
+WITH   transaction_amounts_in_cad AS
+       (SELECT DISTINCT
+               ...
+          FROM fact_transactions AS f
+          JOIN dim_currencies AS cur
+            ON cur.currency_key = f.original_currency_key
+```
+
+The 5th (`daily-status-unpivot.sql`) uses plain indent-style formatting —
+the user confirmed that one was Claude-authored scaffolding, not their own
+style, so it's excluded as a style signal (kept only as a regression
+fixture for the existing indent-mode default template).
+
+The schema/printer had no way to express river style at all — only
+level-based indentation existed. **Decided to extend the printer/schema
+first, then build inference on top of a schema that could actually express
+the user's real style**, rather than build inference against a schema that
+could only produce an approximation.
+
+### The alignment algorithm (reverse-engineered from real examples, not assumed)
+
+Precisely measuring exact character columns across the 4 fixtures (see
+`awk '{n=match($0,/[^ ]/); print n-1}'` used to get exact 0-indexed leading
+whitespace counts, rather than eyeballing rendered text — eyeballing
+markdown-rendered whitespace was actively misleading during this
+investigation) established:
+
+- Every clause keyword in a statement/subquery scope (`SELECT`, `FROM`,
+  `WHERE`, `JOIN`-variants, `ON`, `AND`/`OR`, `GROUP BY`, ...) right-pads so
+  a **reference word** ends at the same shared column.
+- That reference word is **only the keyword's first word** — `GROUP BY`
+  aligns "GROUP", not the full two-word text; `BY` just follows with one
+  space, unaligned. (Initially misread one `GROUP BY` instance as human
+  drift/inconsistency because it didn't fit a "whole-keyword" alignment
+  hypothesis — it fit perfectly once first-word-only alignment was tried.)
+- **JOIN variants and GROUP BY/HAVING/ORDER BY don't right-align their own
+  first word — they borrow another clause's reference width.** Confirmed
+  with `CROSS JOIN` (first word "CROSS", 5 chars) landing at the exact same
+  column as `FROM` (4 chars) in a real fixture — if each keyword aligned
+  independently, `CROSS JOIN` would need one less leading space than `FROM`,
+  which isn't what's observed. JOIN variants always borrow `FROM`'s width;
+  `GROUP BY`/`HAVING`/`ORDER BY` always borrow `WHERE`'s. This is
+  `canonicalFamilyWord()` in `printer.ts`.
+- The reference column itself is **computed dynamically per scope** from
+  whichever clause keywords are actually present (`max` of each one's
+  canonical-family-word length) — not hardcoded to `SELECT`'s width. Verified
+  with a synthetic case (`DELETE FROM t WHERE id = 1 RETURNING id` —
+  `RETURNING`, 9 chars, is wider than `WHERE`, so `WHERE` right-pads out
+  further than its own 5 characters to match).
+- The **family's first member** (the first clause with no earlier real
+  clause in the same statement — usually `SELECT` or `WITH`, but could be
+  `WHERE` if e.g. `DELETE FROM` precedes it) never left-pads — it's flush at
+  the scope's own base column, and instead *right*-pads so whatever follows
+  (a CTE name, or the first list item) lands at the same content column
+  everything else uses.
+- **CTE subquery bodies always move the `(` to its own fresh line** under
+  the CTE name, regardless of how long the CTE name is — verified: two CTEs
+  with very different name lengths in the same script both put `(` at the
+  identical column, ruling out "glued inline after the name." Contrast with
+  a regular clause body (SELECT/FROM/WHERE/...), which *does* glue its
+  first line inline to the keyword.
+- `INSERT INTO`/`UPDATE`/`DELETE FROM`/`DELETE` are **preamble lines, not
+  family members** — they stay flush left and don't participate in the
+  shared-column computation at all (`PREAMBLE_CLAUSES` in `printer.ts`).
+  Missing this initially caused `WITH` (following `INSERT INTO x` on the
+  previous line) to be wrongly left-padded as if it were a second family
+  member.
+
+### Printer implementation (`printer.ts`)
+
+`Ctx` gained an optional `align?: { baseLevel: number; keywordEndCol: number }`.
+`indentStr()` consults it when present — `content column = keywordEndCol + 2`,
+plus `indentSize` per level beyond `baseLevel`, same mechanism level-based
+nesting already used. Because `ctx` already threads through every print
+function, setting `ctx.align` once per scope (in `printStatementBody`) makes
+list items, CASE/WHEN blocks, and nested subqueries all align correctly with
+no further changes needed anywhere else — this was the main reason the
+change was tractable at all rather than a much larger rewrite.
+
+Three call sites compute/consume `ctx.align`: `printStatementBody` (the
+family-width computation + family-first vs. non-first padding),
+`printGroup`'s subquery branch (glues `(` directly to the inner content,
+computing the nested scope's own base column from `indentStr(ctx, level).length
++ 1`), and `printCtes`/`printJoin`/`printChain` (reuse the *inherited*
+`keywordEndCol` from the enclosing scope for `WITH`'s CTE-name gluing, `ON`,
+and `AND`/`OR` continuations, rather than recomputing).
+
+New `templates/river.json` — `layout.mode: "keywordAlign"`, upper casing,
+trailing commas, leading `AND`/`OR`, `newLine` `ON` placement,
+`lists.onePerLine: false` + `wrapThresholdItems: 999` (wrap only when a list
+actually overflows `lineWidth`, not unconditionally — see below for why this
+mattered).
+
+Result: reformatting all 4 real river-style fixtures with `river.json` now
+round-trips essentially exactly (idempotent, all comments preserved,
+balanced parens) — the only diffs from the human originals are things the
+formatter is *supposed* to fix (wrapping one over-`lineWidth` line, trimming
+trailing whitespace, `as`→`AS` casing, spacing `||`/`,`, and cleanly
+re-aligning ~50 lines of `snowflake-plan-cycles.sql` where the human
+original had drifted by a space).
+
+Two design decisions confirmed explicitly with the user (both kept as the
+default, per-file exceptions in the fixtures notwithstanding):
+1. A CTE/subquery `SELECT`'s first list item glues onto the `SELECT` line
+   (matches the majority of CTEs in the fixtures; one CTE in
+   `financial-forecast-feed.sql` does it differently — inconsistent in the
+   source itself, so the majority pattern won).
+2. Short lists (`GROUP BY 1, 2`) stay inline rather than always breaking
+   one-per-line — this is *why* `river.json` uses
+   `onePerLine: false` + a high `wrapThresholdItems` instead of
+   `onePerLine: true` like `default.json`/`compact.json`.
+
+Bugs found and fixed while validating against the real fixtures (all had
+regression tests added to `format.test.ts`'s `keywordAlign layout` describe
+block):
+- Padding after a clause keyword's *leading comment* used the generic
+  content-column indent instead of the family-aligned padding for that
+  specific keyword — a commented-out `WHERE` line in a real fixture exposed
+  this (the real `WHERE` below it ended up over-indented).
+- `WITH` following a preamble line (`INSERT INTO x` before it) was
+  left-padded as if it were a non-first family member, instead of staying
+  flush left — the `PREAMBLE_CLAUSES` fix above.
+- `CROSS JOIN`/JOIN-variant alignment using their own first-word length
+  instead of borrowing `FROM`'s — the `canonicalFamilyWord()` fix above.
+
+### `core/src/infer.ts` — rule-based style inference
+
+`inferStyleTemplate(sql, { id, name, dialect, baseTemplate, description? })`
+reuses the existing pipeline directly (`tokenize` → `attachTrivia` →
+`splitStatements` → `buildTree` → `splitClauses`) plus the raw `sql` string
+itself — `Token.start`/`end` are offsets into that original string, so
+line/column position (and things like "is this comma the last non-whitespace
+thing on its line") is recoverable with no new parsing infrastructure, just
+a `computeLines()`/`lineIndexAt()` helper pair in `infer.ts`.
+
+Every categorical/boolean field goes through one shared `chooseByVote()`
+helper: majority value, confidence = agreement-fraction × a sample-size
+discount (`min(1, observations/3)`) — so a single data point never reads as
+full confidence, and disagreement lowers it further. Casing, `layout.mode`,
+comma/boolean-operator style, JOIN/CTE/subquery placement, quoting, and
+blank-line conventions all use this. `indentation.size` uses a different,
+more targeted signal (see below). `lineWidth` uses the max observed line
+length, rounded up and clamped.
+
+**`layout.mode` detection**: for each statement's non-first family clauses
+(the family-first clause is *excluded* — it's flush-left in both layout
+modes, so including it can coincidentally tie the comparison; this was a
+real bug, caught on `snowflake-plan-cycles.sql` returning 0 confidence),
+compare the variance of clause keywords' *start* columns (indent mode: all
+equal) against the variance of their canonical-family-word *end* columns
+(align mode: all equal). Lower variance wins. Robust because it's a
+classification (which mode?), not an attempt to reverse-engineer the exact
+alignment arithmetic from a possibly-imperfect hand-typed example.
+
+**`indentation.size`**: raw line-to-line indent deltas are unreliable in
+`keywordAlign` mode (most line-start columns are keyword-width-driven, not
+multiples of a fixed unit — confirmed this mispredicted `size: 1` on a real
+fixture with `layout.mode: keywordAlign`, with *full* confidence, which is
+worse than being uncertain). Primary signal instead: CASE/WHEN/END nesting
+always adds exactly one `indentSize` step, in *either* layout mode, so
+`collectCaseIndentDeltas()` measures the indent difference between a CASE
+block's `WHEN`/`ELSE` lines and its matching `END` line. Falls back to raw
+line-to-line deltas only when no CASE blocks exist to anchor on, with
+confidence capped much lower (0.15 vs 0.5) specifically in `keywordAlign`
+mode since that fallback is known-noisy there.
+
+**Deliberately not inferred** (0 confidence, value copied from
+`baseTemplate`): `lists.wrapThresholdItems`, `commas.alignAfterComma`,
+`joins.multiConditionIndent`, `booleanOperators.indentContinuation`,
+`alignment.aliases`, `alignment.assignments` — either genuinely unreliable
+to infer from one example, or (the `alignment.*` fields) not wired into the
+printer at all yet. `clauses.inlineShortStatements` gets a narrow positive-only
+signal: true only if a short multi-clause statement is directly observed on
+one line; absence isn't evidence either way, so it defaults to
+false/0-confidence rather than voting "false" from silence.
+
+Two bugs found via a round-trip validation approach (format a real fixture
+with `river.json`, then run inference on that output, and check it recovers
+`river.json`'s own field values — validates inference against trusted
+ground truth, independent of any noise in the original hand-typed
+fixtures):
+- **`ctes.blankLineBetween` false positive** — compared each CTE item's
+  *start* line to the *next* item's *start* line, which conflates "this
+  CTE's body spans 30 lines" with "there's a blank line here." A real
+  fixture with zero blank lines between CTEs inferred `true` with full
+  confidence. Fixed: compare the *previous* item's *end* line (its last
+  leaf/closing paren) to the next item's start line.
+- **`lists.wrapThresholdItems` interaction bug** — when `lists.onePerLine`
+  infers `false`, blindly copying `wrapThresholdItems` from
+  `default.json` (which is `1`, harmless there only because
+  `onePerLine: true` already forces wrapping regardless) force-wraps *every*
+  list unconditionally once paired with `onePerLine: false` — the opposite
+  of what a false `onePerLine` is supposed to mean. Fixed: fall back to a
+  high `wrapThresholdItems` (999, "let lineWidth alone decide") specifically
+  when the inferred `onePerLine` is `false`.
+
+**Known accuracy limitation, not a bug**: `casing.identifiers` is a single
+blanket rule applied to every identifier-classified token. Real scripts
+sometimes write non-keyword "pseudo-keywords" the tokenizer doesn't
+recognize (e.g. `DATE_TRUNC(MONTH, ...)` — `MONTH` isn't in `KEYWORDS`, so
+it's tokenized/classified as a plain identifier) in a different case than
+real column/table identifiers. Majority-vote inference picks whichever case
+the *real* identifiers mostly use, so these outliers get miscased on
+reformat. This is a pre-existing modeling limitation of `casing.identifiers`
+being a single flat rule, not something `inferStyleTemplate()` introduced —
+manually authoring a template with `casing.identifiers` has the exact same
+effect.
+
+New `core/src/infer.ts` test file (`infer.test.ts`) and the CLI `infer`
+subcommand (`cli.ts`, dispatched on `argv[0] === "infer"`) — see the CLI
+section above.

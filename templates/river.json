@@ -1,7 +1,7 @@
 {
-  "id": "default",
-  "name": "Default",
-  "description": "Conventional readable style: uppercase keywords, one clause and one column per line, trailing commas.",
+  "id": "river",
+  "name": "River",
+  "description": "Keyword-alignment (\"river\") style: clause keywords (SELECT/FROM/WHERE/JOIN/ON/AND/GROUP BY/...) right-pad their first word to a shared column per statement/subquery scope, with CTE names and subquery content starting at that same column.",
   "version": "1.0.0",
   "schemaVersion": "1.0.0",
   "dialect": "generic",
@@ -11,7 +11,7 @@
   },
   "style": {
     "layout": {
-      "mode": "indent"
+      "mode": "keywordAlign"
     },
     "casing": {
       "keywords": "upper",
@@ -29,20 +29,20 @@
       "inlineShortStatements": false
     },
     "lists": {
-      "onePerLine": true,
-      "wrapThresholdItems": 1
+      "onePerLine": false,
+      "wrapThresholdItems": 999
     },
     "commas": {
       "style": "trailing",
       "alignAfterComma": false
     },
     "joins": {
-      "onClausePlacement": "sameLine",
+      "onClausePlacement": "newLine",
       "multiConditionIndent": 1
     },
     "booleanOperators": {
       "style": "leading",
-      "indentContinuation": true
+      "indentContinuation": false
     },
     "ctes": {
       "onePerLine": true,

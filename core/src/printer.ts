@@ -4,8 +4,17 @@ import type { Clause } from "./clauses.js";
 import { splitClauses } from "./clauses.js";
 import { applyCasing, type StyleTemplate } from "./style-template.js";
 
+/** In "keywordAlign" ("river style") layout, clause keywords within a
+ * statement/subquery scope are right-padded so their first word's last
+ * character lines up in a shared column (`keywordEndCol`), and everything
+ * nested underneath (list items, wrapped conditions, CASE blocks) is rooted
+ * at the column right after that (`keywordEndCol + 2`) instead of at
+ * `level * indentSize` from zero. `baseLevel` is the `level` at which that
+ * rooted column applies; deeper levels add `indentSize` per level on top of
+ * it, same as indent mode does from zero. */
 interface Ctx {
   style: StyleTemplate["style"];
+  align?: { baseLevel: number; keywordEndCol: number };
 }
 
 const NO_SPACE_BEFORE = new Set([",", ")", ";", ".", "::", ":", "]"]);
@@ -16,7 +25,37 @@ function indentUnit(ctx: Ctx): string {
 }
 
 function indentStr(ctx: Ctx, level: number): string {
+  if (ctx.align) {
+    const contentCol = ctx.align.keywordEndCol + 2;
+    const col = contentCol + (level - ctx.align.baseLevel) * ctx.style.indentation.size;
+    return " ".repeat(Math.max(0, col));
+  }
   return indentUnit(ctx).repeat(Math.max(0, level));
+}
+
+/** The word a keyword-family alignment column is computed from — e.g.
+ * "GROUP" for "GROUP BY", "LEFT" for "LEFT JOIN". Only this first word is
+ * right-aligned; a second word (BY, JOIN, ...) just follows with one space,
+ * unaligned — this is what the real river-style examples this layout is
+ * modeled on actually do (verified against 4 real fixtures). */
+export function firstWord(keyword: string): string {
+  return keyword.split(" ")[0] ?? keyword;
+}
+
+/** The reference word a clause borrows its alignment width from. JOIN
+ * variants (LEFT JOIN, CROSS JOIN, ...) and GROUP BY/HAVING/ORDER BY don't
+ * right-align their *own* first word — they share FROM's/WHERE's width
+ * regardless of their own length (verified: a real fixture aligns
+ * "CROSS JOIN" to the same column as "FROM", not to "CROSS"'s own length). */
+export function canonicalFamilyWord(keyword: string): string {
+  if (keyword.endsWith("JOIN")) return "FROM";
+  if (keyword === "GROUP BY" || keyword === "HAVING" || keyword === "ORDER BY") return "WHERE";
+  return firstWord(keyword);
+}
+
+/** Left-padding so `keyword`'s alignment reference word ends exactly at `keywordEndCol`. */
+function familyPad(keywordEndCol: number, keyword: string): string {
+  return " ".repeat(Math.max(0, keywordEndCol - canonicalFamilyWord(keyword).length + 1));
 }
 
 function firstLeaf(node: Node): Leaf {
@@ -92,7 +131,7 @@ function renderLeafText(leaf: Leaf, kind: "keyword" | "function" | "type" | "ide
   }
 }
 
-function classifyLeaf(nodes: Node[], idx: number): "keyword" | "function" | "type" | "identifier" | "raw" {
+export function classifyLeaf(nodes: Node[], idx: number): "keyword" | "function" | "type" | "identifier" | "raw" {
   const node = nodes[idx];
   if (node.kind !== "leaf") return "raw";
   const { token } = node.leaf;
@@ -284,7 +323,7 @@ function printCaseBlock(inner: Node[], level: number, ctx: Ctx): string {
 }
 
 /** Splits a flat node sequence at top-level commas (not inside nested groups). */
-function splitTopLevelCommas(nodes: Node[]): Node[][] {
+export function splitTopLevelCommas(nodes: Node[]): Node[][] {
   const items: Node[][] = [];
   let current: Node[] = [];
   for (const node of nodes) {
@@ -332,6 +371,14 @@ function printGroup(group: GroupNode, level: number, ctx: Ctx): string {
     firstInner && isKeywordLeaf(firstInner, "SELECT") || (firstInner && isKeywordLeaf(firstInner, "WITH"));
 
   if (isSubquery) {
+    if (ctx.style.layout.mode === "keywordAlign") {
+      // River style glues "(" directly to the subquery's first keyword (no
+      // newline in between) — the subquery's own family-alignment column
+      // (`baseIndentForInner`) starts right after that "(".
+      const baseIndentForInner = indentStr(ctx, level).length + 1;
+      const inner = printStatementBody(group.content, level + 1, ctx, baseIndentForInner);
+      return "(" + inner + "\n" + indentStr(ctx, level) + ")";
+    }
     const inner = printStatementBody(group.content, level + 1, ctx);
     return "(\n" + indentStr(ctx, level + 1) + inner + "\n" + indentStr(ctx, level) + ")";
   }
@@ -409,18 +456,24 @@ function splitChain(
 
 /** Prints a chain of segments (boolean or arithmetic) with one segment per
  * line once there's more than one, using booleanOperators for placement/indent
- * — the one shared "how do we wrap a chain of operators" style knob. */
+ * — the one shared "how do we wrap a chain of operators" style knob.
+ * `familyAlign`: in keywordAlign mode, WHERE/HAVING/JOIN...ON condition
+ * chains right-align each AND/OR to the enclosing scope's shared keyword
+ * column (same as SELECT/FROM/...), rather than the generic per-level
+ * indent an arithmetic +/- chain inside a list item would use. */
 function printChain(
   nodes: Node[],
   level: number,
   ctx: Ctx,
   continuationLevel: number | undefined,
   isSplitOp: (nodes: Node[], idx: number) => string | null,
-  renderOp: (op: string) => string
+  renderOp: (op: string) => string,
+  familyAlign = false
 ): string {
   const segments = splitChain(nodes, isSplitOp);
   if (segments.length === 1) return printSeq(segments[0].nodes, level, ctx);
 
+  const useFamilyAlign = familyAlign && !!ctx.align;
   const contLevel = continuationLevel ?? (ctx.style.booleanOperators.indentContinuation ? level + 1 : level);
   const b = new Builder();
   segments.forEach((seg, i) => {
@@ -431,7 +484,11 @@ function printChain(
     }
     const opText = renderOp(seg.op ?? "");
     if (ctx.style.booleanOperators.style === "leading") {
-      b.newline(ctx, contLevel);
+      if (useFamilyAlign) {
+        b.raw("\n" + familyPad(ctx.align!.keywordEndCol, opText));
+      } else {
+        b.newline(ctx, contLevel);
+      }
       b.raw(opText + " " + text);
     } else {
       b.raw(" " + opText);
@@ -449,8 +506,22 @@ function isAndOr(nodes: Node[], idx: number): string | null {
   return null;
 }
 
-function printBooleanChain(nodes: Node[], level: number, ctx: Ctx, continuationLevel?: number): string {
-  return printChain(nodes, level, ctx, continuationLevel, isAndOr, (op) => applyCasing(op, ctx.style.casing.keywords));
+function printBooleanChain(
+  nodes: Node[],
+  level: number,
+  ctx: Ctx,
+  continuationLevel?: number,
+  familyAlign = false
+): string {
+  return printChain(
+    nodes,
+    level,
+    ctx,
+    continuationLevel,
+    isAndOr,
+    (op) => applyCasing(op, ctx.style.casing.keywords),
+    familyAlign
+  );
 }
 
 function isArithmeticOp(nodes: Node[], idx: number): string | null {
@@ -479,6 +550,14 @@ function printClauseKeyword(clause: Clause, ctx: Ctx): string {
 const LIST_CLAUSES = new Set(["SELECT", "FROM", "GROUP BY", "ORDER BY", "RETURNING", "VALUES", "SET"]);
 const CONDITION_CLAUSES = new Set(["WHERE", "HAVING"]);
 
+/** In keywordAlign mode, these lead a statement as a one-off preamble line
+ * (verified against a real fixture: "INSERT INTO x" stays flush left, and
+ * the following WITH/SELECT/SET starts its OWN alignment family — INSERT
+ * INTO isn't a peer of SELECT/FROM/WHERE the way JOIN or GROUP BY are).
+ * Not part of the shared alignment family: excluded from the column-width
+ * computation and never right-padded/left-padded like a family member. */
+const PREAMBLE_CLAUSES = new Set(["INSERT INTO", "UPDATE", "DELETE FROM", "DELETE"]);
+
 /** Prints one list item (a SELECT column, GROUP BY key, ...), wrapping a long
  * arithmetic +/- chain onto multiple lines if the flat form overflows lineWidth. */
 function printListItem(item: Node[], level: number, ctx: Ctx): string {
@@ -501,7 +580,7 @@ function printClauseBody(clause: Clause, level: number, ctx: Ctx): string {
     return printList(items, level, ctx, (item) => printListItem(item, level, ctx));
   }
   if (CONDITION_CLAUSES.has(clause.keyword)) {
-    return printBooleanChain(clause.body, level, ctx);
+    return printBooleanChain(clause.body, level, ctx, undefined, true);
   }
   if (clause.keyword === "WITH") {
     return printCtes(clause.body, level, ctx);
@@ -510,6 +589,28 @@ function printClauseBody(clause: Clause, level: number, ctx: Ctx): string {
     return printJoin(clause.body, level, ctx);
   }
   return printSeq(clause.body, level, ctx);
+}
+
+/** Prints one CTE item ("name AS (subquery)") for keywordAlign mode: the
+ * "name AS" prefix stays on the keyword's line, but the subquery group
+ * always moves to its own fresh line at this scope's shared column — that's
+ * the actual convention in the real river-style examples this is modeled
+ * on (verified: CTE bodies never glue "(" inline after "AS", regardless of
+ * how long the CTE name is). */
+function printCteItem(item: Node[], level: number, ctx: Ctx): string {
+  const groupIdx = item.findIndex((n) => n.kind === "group");
+  if (groupIdx === -1) return printSeq(item, level, ctx);
+
+  const prefix = item.slice(0, groupIdx);
+  const group = item[groupIdx] as GroupNode;
+  const rest = item.slice(groupIdx + 1);
+
+  const b = new Builder();
+  b.raw(printSeq(prefix, level, ctx));
+  b.newline(ctx, level);
+  b.raw(printGroup(group, level, ctx));
+  if (rest.length > 0) b.raw(" " + printSeq(rest, level, ctx));
+  return b.out;
 }
 
 function printCtes(body: Node[], level: number, ctx: Ctx): string {
@@ -521,9 +622,12 @@ function printCtes(body: Node[], level: number, ctx: Ctx): string {
   }
 
   const items = splitTopLevelCommas(nodes);
-  const printedItems = items.map((item) => printSeq(item, level, ctx));
+  const alignMode = ctx.style.layout.mode === "keywordAlign" && !!ctx.align;
+  const printedItems = items.map((item) =>
+    alignMode ? printCteItem(item, level, ctx) : printSeq(item, level, ctx)
+  );
 
-  if (!ctx.style.ctes.onePerLine && printedItems.length > 1) {
+  if (!alignMode && !ctx.style.ctes.onePerLine && printedItems.length > 1) {
     const inline = printedItems.join(", ");
     const fits = !inline.includes("\n") && indentStr(ctx, level).length + prefix.length + inline.length <= ctx.style.lineWidth;
     if (fits) return prefix + inline;
@@ -551,6 +655,17 @@ function printJoin(body: Node[], level: number, ctx: Ctx): string {
   b.raw(printSeq(tableRef, level, ctx));
   if (onIdx !== -1) {
     const onKeyword = applyCasing("ON", ctx.style.casing.keywords);
+    const alignMode = ctx.style.layout.mode === "keywordAlign" && !!ctx.align;
+
+    if (alignMode) {
+      // ON (and a wrapped AND/OR chain under it) reuses the enclosing
+      // clause-list's shared column — the same one SELECT/FROM/WHERE/JOIN
+      // already right-align to — rather than a separately computed level.
+      b.raw("\n" + familyPad(ctx.align!.keywordEndCol, "ON"));
+      b.raw(onKeyword + " " + printBooleanChain(condition, level, ctx, level, true));
+      return b.out;
+    }
+
     // The ON condition's own line sits at `conditionLevel`; a wrapped
     // multi-condition chain indents `multiConditionIndent` levels past that
     // — a dedicated knob, not stacked with booleanOperators.indentContinuation
@@ -568,26 +683,81 @@ function printJoin(body: Node[], level: number, ctx: Ctx): string {
   return b.out;
 }
 
-/** Prints one statement's clauses (used both for top-level statements and subqueries). */
-function printStatementBody(nodes: Node[], level: number, ctx: Ctx): string {
+/** Prints one statement's clauses (used both for top-level statements and
+ * subqueries). `baseIndentOverride` is only used in `keywordAlign` mode: the
+ * column (0-indexed) this scope's family-alignment column is rooted at —
+ * passed down by `printGroup` when this is a subquery glued right after a
+ * "(" (see there for why it can't just be derived from `level`). */
+function printStatementBody(nodes: Node[], level: number, ctx: Ctx, baseIndentOverride?: number): string {
   const clauses = splitClauses(nodes);
   const b = new Builder();
+  const alignMode = ctx.style.layout.mode === "keywordAlign";
 
+  // In align mode, every clause keyword in this scope (SELECT/FROM/WHERE/
+  // JOIN/GROUP BY/...) right-pads its first word to a shared column,
+  // computed fresh per scope from whichever clause keywords actually appear
+  // here — the textbook "river style" algorithm. `scopeCtx` carries that
+  // column down to every recursive call underneath (list items, CASE
+  // blocks, JOIN's ON, nested subqueries), which is what lets all of them
+  // align correctly with no further plumbing.
+  let scopeCtx = ctx;
+  let widestFirstWord = 0;
+  let keywordEndCol = 0;
+  let scopeBaseIndent = 0;
+  if (alignMode) {
+    const baseIndent = baseIndentOverride ?? 0;
+    scopeBaseIndent = baseIndent;
+    const familyKeywords = clauses
+      .filter((c) => c.keyword !== "" && !PREAMBLE_CLAUSES.has(c.keyword))
+      .map((c) => c.keyword);
+    widestFirstWord = Math.max(1, ...familyKeywords.map((k) => canonicalFamilyWord(k).length));
+    keywordEndCol = baseIndent + widestFirstWord - 1;
+    scopeCtx = { ...ctx, align: { baseLevel: level + 1, keywordEndCol } };
+  }
+
+  let familySeen = false;
   clauses.forEach((clause, i) => {
-    if (i > 0) b.newline(ctx, level);
-
-    if (clause.keyword === "") {
-      // No recognized clause keyword (e.g. a bare "CREATE ... AS" prefix) —
-      // print inline at this level, no separate header/body split.
-      b.raw(printClauseBody(clause, level, ctx));
+    if (clause.keyword === "" || (alignMode && PREAMBLE_CLAUSES.has(clause.keyword))) {
+      // No recognized clause keyword (e.g. a bare "CREATE ... AS" prefix),
+      // or a preamble clause in align mode (INSERT INTO/UPDATE/DELETE) —
+      // print inline at this level, no family padding, doesn't consume the
+      // "family first" slot.
+      if (i > 0) b.newline(scopeCtx, level);
+      const preambleBody = printClauseBody(clause, level, scopeCtx);
+      const keywordPrefix = clause.keyword === "" ? "" : printClauseKeyword(clause, scopeCtx);
+      b.raw(keywordPrefix && preambleBody ? keywordPrefix + " " + preambleBody : keywordPrefix + preambleBody);
       return;
+    }
+
+    const isFamilyFirst = !familySeen;
+    familySeen = true;
+
+    if (i > 0) {
+      if (alignMode && !isFamilyFirst) {
+        // Right-align this keyword's first word to keywordEndCol, rather
+        // than the generic per-level indent.
+        b.raw("\n" + familyPad(keywordEndCol, clause.keyword));
+      } else if (alignMode) {
+        // The family's first member never gets left-padding (it's flush at
+        // this scope's own base indent) even if it isn't array index 0 —
+        // e.g. WITH following a preamble "INSERT INTO x" line.
+        b.raw("\n" + " ".repeat(scopeBaseIndent));
+      } else {
+        b.newline(scopeCtx, level);
+      }
     }
 
     const firstKeywordLeaf = clause.keywordLeaves[0]?.leaf;
     const lastKeywordLeaf = clause.keywordLeaves[clause.keywordLeaves.length - 1]?.leaf;
     for (const c of firstKeywordLeaf?.leadingComments ?? []) {
       b.raw(c.value);
-      b.newline(ctx, level);
+      if (alignMode) {
+        // The comment sits on its own line at whatever column the keyword
+        // itself would've used — not the generic content column.
+        b.raw("\n" + (isFamilyFirst ? " ".repeat(scopeBaseIndent) : familyPad(keywordEndCol, clause.keyword)));
+      } else {
+        b.newline(scopeCtx, level);
+      }
     }
 
     // SELECT DISTINCT/ALL: keep the modifier attached to the SELECT keyword
@@ -595,7 +765,7 @@ function printStatementBody(nodes: Node[], level: number, ctx: Ctx): string {
     let body = clause.body;
     let selectModifier = "";
     if (clause.keyword === "SELECT" && (isKeywordLeaf(body[0], "DISTINCT") || isKeywordLeaf(body[0], "ALL"))) {
-      selectModifier = applyCasing((body[0] as LeafNode).leaf.token.value, ctx.style.casing.keywords);
+      selectModifier = applyCasing((body[0] as LeafNode).leaf.token.value, scopeCtx.style.casing.keywords);
       body = body.slice(1);
     }
 
@@ -608,14 +778,24 @@ function printStatementBody(nodes: Node[], level: number, ctx: Ctx): string {
       lastKeywordLeaf.trailingComment = null;
     }
 
-    let keywordText = printClauseKeyword(clause, ctx);
+    let keywordText = printClauseKeyword(clause, scopeCtx);
     if (selectModifier) keywordText += " " + selectModifier;
     if (lastKeywordLeaf?.trailingComment) {
       keywordText += " " + lastKeywordLeaf.trailingComment.value;
     }
-    const bodyText = printClauseBody({ ...clause, body }, level + 1, ctx);
+    const bodyText = printClauseBody({ ...clause, body }, level + 1, scopeCtx);
     if (bodyText.length === 0) {
       b.raw(keywordText);
+    } else if (alignMode) {
+      // Always glue the body's first line to the keyword line — bodyText's
+      // own internal newlines were already rendered against scopeCtx's
+      // aligned column, so straight concatenation lands everything in the
+      // right place. The family-first clause (e.g. WITH, or a subquery's
+      // own SELECT) right-pads itself out to the shared content column;
+      // every other clause already ends exactly at keywordEndCol via
+      // familyPad, so one space suffices.
+      const pad = isFamilyFirst ? " ".repeat(Math.max(1, widestFirstWord + 1 - keywordText.length)) : " ";
+      b.raw(keywordText + pad + bodyText);
     } else if (!bodyText.includes("\n")) {
       // A body that renders on one line (a single item/condition, or a short
       // clause like LIMIT n) stays on the keyword's own line — wrapping to a
