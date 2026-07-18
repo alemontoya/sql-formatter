@@ -8,8 +8,8 @@ interface Ctx {
   style: StyleTemplate["style"];
 }
 
-const NO_SPACE_BEFORE = new Set([",", ")", ";", ".", "::", ":"]);
-const NO_SPACE_AFTER = new Set(["(", ".", "::", ":"]);
+const NO_SPACE_BEFORE = new Set([",", ")", ";", ".", "::", ":", "]"]);
+const NO_SPACE_AFTER = new Set(["(", ".", "::", ":", "["]);
 
 function indentUnit(ctx: Ctx): string {
   return ctx.style.indentation.char === "tab" ? "\t" : " ".repeat(ctx.style.indentation.size);
@@ -124,6 +124,21 @@ function isUnarySign(nodes: Node[], idx: number): boolean {
   return !BINARY_TRIGGER_TYPES.has(prev.leaf.token.type);
 }
 
+/** A `[` is array-indexing (glued to what came before, e.g. `arr[0]`) when it
+ * directly follows a value/group/closing-bracket. Otherwise (after a keyword,
+ * comma, or nothing) it's the start of something else — e.g. a SQLite
+ * bracket-quoted identifier, `SELECT [col1], [col2]` — and keeps normal
+ * spacing. */
+function isIndexBracket(nodes: Node[], idx: number): boolean {
+  const node = nodes[idx];
+  if (node.kind !== "leaf" || node.leaf.token.value !== "[") return false;
+  const prev = nodes[idx - 1];
+  if (!prev) return false;
+  if (prev.kind === "group") return true;
+  if (BINARY_TRIGGER_TYPES.has(prev.leaf.token.type)) return true;
+  return prev.leaf.token.type === "operator" && prev.leaf.token.value === "]";
+}
+
 function printComments(b: Builder, ctx: Ctx, comments: Token_[], level: number) {
   for (const c of comments) {
     if (b.out.length > 0) b.newline(ctx, level);
@@ -179,7 +194,12 @@ function printSeq(nodes: Node[], level: number, ctx: Ctx): string {
     }
 
     const kind = classifyLeaf(nodes, idx);
-    b.spaceAwareText(renderLeafText(node.leaf, kind, ctx));
+    const text = renderLeafText(node.leaf, kind, ctx);
+    if (isIndexBracket(nodes, idx)) {
+      b.text(text, true);
+    } else {
+      b.spaceAwareText(text);
+    }
     if (isUnarySign(nodes, idx)) b.suppressNextSpace();
     if (node.leaf.trailingComment) b.text(node.leaf.trailingComment.value);
   }

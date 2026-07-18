@@ -97,6 +97,28 @@ describe("format", () => {
     expect(out).not.toMatch(/value\s*:\s/);
   });
 
+  it("doesn't put spaces around array-indexing brackets (arr[0])", () => {
+    const sql = "select agg(x) within group (order by y)[0] from t;";
+    const out = format(sql, defaultTemplate);
+    expect(out).toContain(")[0]");
+    expect(out).not.toContain("[ 0 ]");
+    expect(out).not.toMatch(/\)\s+\[/);
+  });
+
+  it("handles chained array indexing (arr[0][1])", () => {
+    const sql = "select arr[0][1] from t;";
+    const out = format(sql, defaultTemplate);
+    expect(out).toContain("arr[0][1]");
+  });
+
+  it("keeps normal spacing for a SQLite bracket-quoted identifier ([col])", () => {
+    const sql = "select [col1], [legacy col] from t;";
+    const out = format(sql, defaultTemplate);
+    expect(out).toContain("[col1],");
+    expect(out).toContain("[legacy col]");
+    expect(out).not.toContain("SELECT[col1]");
+  });
+
   it("wraps a long arithmetic +/- chain onto multiple lines when it exceeds lineWidth", () => {
     const columns = Array.from({ length: 10 }, (_, i) => `some_reasonably_long_column_name_${i}`);
     const sql = `select ${columns.join(" + ")} as total from t;`;
@@ -479,5 +501,39 @@ describe("format (real-world fixture: daily-status-unpivot)", () => {
     const out = format(sql, defaultTemplate);
     const maxLineLength = Math.max(...out.split("\n").map((line) => line.length));
     expect(maxLineLength).toBeLessThan(150);
+  });
+});
+
+describe("format (real-world fixture: learning-active-users-subscriptions)", () => {
+  const fixturePath = new URL("./__fixtures__/learning-active-users-subscriptions.sql", import.meta.url);
+  const sql = readFileSync(fixturePath, "utf8");
+
+  it("preserves every comment when formatting with the default template", () => {
+    const out = format(sql, defaultTemplate);
+    expect(commentCount(out)).toBe(commentCount(sql));
+  });
+
+  it("preserves every comment when formatting with the compact template", () => {
+    const out = format(sql, compactTemplate);
+    expect(commentCount(out)).toBe(commentCount(sql));
+  });
+
+  it("is idempotent on the real-world fixture", () => {
+    const once = format(sql, defaultTemplate);
+    const twice = format(once, defaultTemplate);
+    expect(twice).toBe(once);
+  });
+
+  it("produces syntactically balanced parentheses", () => {
+    const out = format(sql, defaultTemplate);
+    const opens = (out.match(/\(/g) ?? []).length;
+    const closes = (out.match(/\)/g) ?? []).length;
+    expect(opens).toBe(closes);
+  });
+
+  it("doesn't space out the array-indexing bracket after WITHIN GROUP (...) (regression)", () => {
+    const out = format(sql, defaultTemplate);
+    expect(out).toContain(")[0]");
+    expect(out).not.toContain("[ 0 ]");
   });
 });

@@ -419,3 +419,31 @@ so default binary-operator spacing applied. Fixed by adding `":"` to both
 sets, treating it like `.` (member access — no space either side). One new
 test, including a nested-path case (`value:nested:field`) to confirm
 consecutive single colons don't get misparsed as anything else.
+
+## 6th real script bug: array-indexing brackets (fixed)
+
+A script using `ARRAY_AGG(...) WITHIN GROUP (ORDER BY ...)[0]` printed the
+index as `)[ 0 ]` — a stray space before `[` and spaces padding the `0`
+inside it. `[`/`]` were never tokenized or spaced specially at all (verified
+`[` isn't even in `SINGLE_CHAR_PUNCTUATION`, so it fell to the generic
+operator fallback), so default binary-operator spacing applied uniformly —
+same root cause shape as the `=>` and `:` bugs, a third instance of it.
+
+Unlike `:`/`=>`, this one couldn't just get added to `NO_SPACE_BEFORE`
+unconditionally: `[` is *also* how SQLite's bracket-quoted identifiers work
+(`SELECT [col1], [legacy col] FROM t` — confirmed via `tokenizer.test.ts`'s
+existing sqlite sample, which round-trips losslessly but was never actually
+tokenized as a single "bracket identifier" token; it's just plain `[`,
+`identifier`, `identifier`, `]` leaves that happen to concatenate back
+correctly). Blanket "no space before `[`" would have glued `SELECT[col1]`
+together, which is wrong. Added `isIndexBracket()` (`printer.ts`, same shape
+as `isUnarySign`): `[` is array-indexing (no space before) only when it
+directly follows a value — an identifier, group/closing-paren, or another
+`]` for chained indexing (`arr[0][1]`) — and keeps normal spacing everywhere
+else (after a keyword, comma, or nothing, i.e. the bracket-identifier case).
+`[`/`]` were added unconditionally to `NO_SPACE_AFTER`/`NO_SPACE_BEFORE`
+respectively, since content should hug the brackets regardless of which
+case it is. 3 new synthetic tests cover indexing, chained indexing, and
+confirm the bracket-identifier case didn't regress. The triggering script
+is a fifth committed fixture:
+`core/src/__fixtures__/learning-active-users-subscriptions.sql`.
