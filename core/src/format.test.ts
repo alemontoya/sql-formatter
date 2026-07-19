@@ -213,6 +213,53 @@ describe("format (blank lines between statements)", () => {
   });
 });
 
+describe("format (comments around a statement-terminating semicolon)", () => {
+  it("a comment on the statement's last token's own line, before a bare ;, doesn't corrupt the semicolon", () => {
+    // Regression: `text += ";"` used to append blindly, landing the ";"
+    // *inside* the line comment's text instead of terminating the
+    // statement — e.g. output like "SELECT 1 -- note;" (the comment now
+    // swallows the ";"). It must go on a fresh line instead.
+    const sql = "select 1 -- inline before semi\n;\n";
+    const out = format(sql, defaultTemplate);
+    expect(out).toBe(["SELECT 1 -- inline before semi", ";", ""].join("\n"));
+  });
+
+  it("a comment on its own line directly before a bare ; is preserved, not dropped", () => {
+    const sql = "select 1\n-- note before semicolon\n;\n";
+    const out = format(sql, defaultTemplate);
+    expect(out).toBe(["SELECT 1", "-- note before semicolon", ";", ""].join("\n"));
+  });
+
+  it("a comment trailing a bare ; on the same line is preserved, not dropped", () => {
+    const sql = "select 1\n; -- trailing on semicolon line\n";
+    const out = format(sql, defaultTemplate);
+    expect(out).toBe(["SELECT 1; -- trailing on semicolon line", ""].join("\n"));
+  });
+
+  it("a later statement is unaffected by a preceding statement's dangling-semicolon comment", () => {
+    const sql = "select 1 -- inline before semi\n;\nselect 2;\n";
+    const out = format(sql, defaultTemplate);
+    expect(out).toBe(["SELECT 1 -- inline before semi", ";", "", "SELECT 2;", ""].join("\n"));
+  });
+
+  it("the normal case (no comment near the semicolon) is unaffected", () => {
+    const out = format("select 1;", defaultTemplate);
+    expect(out).toBe("SELECT 1;\n");
+  });
+
+  it("is idempotent for all three comment-near-semicolon shapes", () => {
+    for (const sql of [
+      "select 1 -- inline before semi\n;\n",
+      "select 1\n-- note before semicolon\n;\n",
+      "select 1\n; -- trailing on semicolon line\n",
+    ]) {
+      const once = format(sql, defaultTemplate);
+      const twice = format(once, defaultTemplate);
+      expect(twice).toBe(once);
+    }
+  });
+});
+
 describe("format (CASE)", () => {
   it("preserves a comment on its own line before a WHEN branch", () => {
     const sql = ["select case", "  -- studio", "  when x = 1 then 'a'", "  else 'b'", "end from t;"].join("\n");

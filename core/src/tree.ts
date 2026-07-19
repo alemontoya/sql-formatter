@@ -18,9 +18,23 @@ function isPunct(leaf: Leaf, value: string): boolean {
   return leaf.token.type === "punctuation" && leaf.token.value === value;
 }
 
+export interface StatementSplit {
+  leaves: Leaf[];
+  hadSemicolon: boolean;
+  /** Comments attached to the discarded top-level `;` leaf itself — on
+   * their own line before it (leading, e.g. `select 1\n-- note\n;`) or on
+   * the same line after it (trailing, e.g. `select 1\n; -- note`). Once
+   * the `;` has served as a split point its leaf is thrown away, so
+   * without capturing these here, a comment attached directly to it would
+   * silently vanish — `format.ts` folds them back in around the semicolon
+   * it synthesizes. */
+  danglingLeadingComments: Leaf["leadingComments"];
+  danglingTrailingComment: Leaf["trailingComment"];
+}
+
 /** Splits a flat leaf stream into statements at top-level `;` boundaries. */
-export function splitStatements(leaves: Leaf[]): { leaves: Leaf[]; hadSemicolon: boolean }[] {
-  const statements: { leaves: Leaf[]; hadSemicolon: boolean }[] = [];
+export function splitStatements(leaves: Leaf[]): StatementSplit[] {
+  const statements: StatementSplit[] = [];
   let current: Leaf[] = [];
   let depth = 0;
 
@@ -29,13 +43,20 @@ export function splitStatements(leaves: Leaf[]): { leaves: Leaf[]; hadSemicolon:
     if (isPunct(leaf, ")")) depth--;
 
     if (isPunct(leaf, ";") && depth === 0) {
-      statements.push({ leaves: current, hadSemicolon: true });
+      statements.push({
+        leaves: current,
+        hadSemicolon: true,
+        danglingLeadingComments: leaf.leadingComments,
+        danglingTrailingComment: leaf.trailingComment,
+      });
       current = [];
       continue;
     }
     current.push(leaf);
   }
-  if (current.length > 0) statements.push({ leaves: current, hadSemicolon: false });
+  if (current.length > 0) {
+    statements.push({ leaves: current, hadSemicolon: false, danglingLeadingComments: [], danglingTrailingComment: null });
+  }
 
   return statements.filter((s) => s.leaves.length > 0);
 }

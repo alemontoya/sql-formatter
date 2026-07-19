@@ -249,10 +249,11 @@ not template-specific hacks:
   `inferStyleTemplate()` (always defaulted, 0 confidence) — no real fixture
   uses either convention, so there's no source-position signal to detect it
   from; would need a genuine example before it's worth guessing at.
-- A comment attached directly to a bare `;` (rare — a comment between the
-  last real token and the semicolon) would currently be dropped, since
-  `splitStatements()` in `tree.ts` discards the `;` leaf entirely rather
-  than checking it for attached trivia.
+- ~~A comment attached directly to a bare `;`...~~ **Implemented** — see
+  the dated section below, which also covers a worse bug found while fixing
+  it (a same-line trailing comment on the statement's *last real token*
+  could get the synthesized `;` appended inside the comment's text,
+  corrupting it — not the same case as this bullet, but directly adjacent).
 - `quoting.forceQuoteIdentifiers` isn't implemented in the printer (both
   `default.json`/`compact.json` have it `false`, so untested there).
   `inferStyleTemplate()` *does* infer a best-effort value for it (checks
@@ -1059,3 +1060,64 @@ item, which has no such prefix. Both bundled templates needing this feature
 would use trailing commas in practice; flagging rather than fixing blind,
 since there's no real example to confirm what the "correct" leading-comma
 + alignment interaction should even look like.
+
+## Comments near a statement-terminating `;` — dropped/corrupted, now fixed
+
+Next item on the "Known v1 gaps" list. Testing the documented gap (a
+comment attached directly to a bare `;`) surfaced a second, worse bug in
+the same neighborhood that wasn't in the original bullet:
+
+1. **The documented gap**: `splitStatements()` in `tree.ts` finds a
+   top-level `;`, uses it purely as a split signal, and discards the leaf
+   — including any comments attached to it. Two shapes: a comment on its
+   own line directly before the `;` (attaches as the `;` leaf's own
+   `leadingComments`, per the trivia pass's "own-line comment attaches to
+   the *following* token" rule), or a comment trailing the `;` on the same
+   line (`trailingComment`). Both vanished entirely.
+2. **Found while testing #1, not in the original bullet**: `format.ts`'s
+   `if (alwaysAppendSemicolon) text += ";"` appends the `;` character
+   blindly to whatever `printStatement()` produced. If the statement's own
+   *last real token* has a same-line trailing `lineComment` (e.g. `select 1
+   -- inline before semi\n;`), that comment is already the literal tail of
+   `text` — appending `;` right after it doesn't terminate the statement,
+   it lands **inside** the comment's text (`-- inline before semi;`), since
+   a line comment runs to end-of-line and swallows anything appended past
+   it. The semicolon effectively disappeared from the SQL's actual
+   structure, not just its formatting.
+
+Both share one root fix, applied without deep restructuring of the
+printer: **a synthesized `;` must never be glued directly after a line
+comment.** `splitStatements()`'s return type gained
+`danglingLeadingComments`/`danglingTrailingComment` (the discarded `;`
+leaf's own comments, captured instead of thrown away). A new exported
+`lastLeafOfStatement()` in `printer.ts` (thin wrapper around the
+already-existing but unexported `lastLeaf()`, which recurses through
+groups via `.close`) lets `format.ts` check whether the statement's actual
+last leaf carries a trailing `lineComment`. `format.ts` then picks the
+placement:
+
+- Normal case (no dangling comments, doesn't end in a line comment):
+  `text + ";"`, byte-identical to before.
+- Ends in a line comment (case 2 above), no dangling comments: `;` moves to
+  a fresh line (`text + "\n;"`) — can't be repositioned earlier without
+  leaf-level surgery through every print function that might emit the
+  statement's last token, so a guaranteed-safe fresh line was chosen over a
+  more invasive fix for a rare edge case.
+- Dangling leading comments exist (comment on its own line before the
+  original `;`): each printed on its own line, followed by `;` on a fresh
+  line after them — closely mirrors the original source shape.
+- Dangling trailing comment exists (comment on the same line as the
+  original `;`): appended after the synthesized `;` on the same line
+  (`text + "; " + comment`) — safe, since nothing needs to follow it on
+  that line.
+
+6 new tests in `format.test.ts`'s `describe("format (comments around a
+statement-terminating semicolon)")`: the corruption case (exact output,
+`;` on its own line), a leading dangling comment preserved, a trailing
+dangling comment preserved, a later statement unaffected by an earlier
+one's dangling comment, the normal case unchanged, and idempotency across
+all three comment-near-semicolon shapes. All 147 `core` tests pass (141
+pre-existing + 6 new); 174 total across `core`+`cli`. `infer.ts` destructures
+only `leaves`/`hadSemicolon` from `splitStatements()`'s return value, so the
+two new fields didn't require any change there. Verified manually against
+the CLI for all four scenarios plus idempotency round-trips.

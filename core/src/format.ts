@@ -1,7 +1,7 @@
 import { tokenize } from "./tokenizer.js";
 import { attachTrivia, type Leaf } from "./trivia.js";
 import { splitStatements, buildTree } from "./tree.js";
-import { printStatement } from "./printer.js";
+import { printStatement, lastLeafOfStatement } from "./printer.js";
 import { computeLines, lineIndexAt, type SourceLines } from "./lines.js";
 import type { StyleTemplate } from "./style-template.js";
 
@@ -26,10 +26,30 @@ export function format(sql: string, template: StyleTemplate): string {
   const statements = splitStatements(leaves);
   const lines = computeLines(sql);
 
-  const printed = statements.map(({ leaves: stmtLeaves }) => {
+  const printed = statements.map(({ leaves: stmtLeaves, danglingLeadingComments, danglingTrailingComment }) => {
     const tree = buildTree(stmtLeaves);
     let text = printStatement(tree, template.style);
-    if (template.style.statementTerminator.alwaysAppendSemicolon) text += ";";
+    if (template.style.statementTerminator.alwaysAppendSemicolon) {
+      // A `;` can't be glued directly after a line comment (`-- ...`) —
+      // that would put it *inside* the comment's text instead of
+      // terminating the statement. Two ways that can happen: the
+      // statement's own last leaf carries a same-line trailing comment
+      // (`select 1 -- note\n;`), or the original `;` itself had a comment
+      // attached that `splitStatements()` would otherwise have dropped
+      // (`select 1\n-- note\n;`, or `select 1\n; -- note`). Route the `;`
+      // onto a fresh line whenever either applies, rather than risk
+      // corrupting the SQL by appending blindly.
+      const lastLeaf = lastLeafOfStatement(tree);
+      const endsInLineComment = lastLeaf?.trailingComment?.type === "lineComment";
+      if (danglingLeadingComments.length > 0) {
+        text += "\n" + danglingLeadingComments.map((c) => c.value).join("\n") + "\n;";
+      } else if (endsInLineComment) {
+        text += "\n;";
+      } else {
+        text += ";";
+      }
+      if (danglingTrailingComment) text += " " + danglingTrailingComment.value;
+    }
     return text;
   });
 

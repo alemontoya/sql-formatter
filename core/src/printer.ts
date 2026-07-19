@@ -67,6 +67,17 @@ function lastLeaf(node: Node): Leaf {
   return node.close ?? (node.content.length ? lastLeaf(node.content[node.content.length - 1]) : node.open);
 }
 
+/** The last leaf of an entire statement's top-level node sequence, or
+ * `null` for an empty statement. Exported for `format.ts`, which needs to
+ * know whether the statement's last leaf carries a same-line trailing
+ * `lineComment` before deciding where a synthesized `;` can safely go —
+ * appending it directly after a line comment would put it *inside* that
+ * comment's text instead of terminating the statement. */
+export function lastLeafOfStatement(nodes: Node[]): Leaf | null {
+  const last = nodes[nodes.length - 1];
+  return last ? lastLeaf(last) : null;
+}
+
 function isKeywordLeaf(node: Node | undefined, word: string): boolean {
   return (
     !!node &&
