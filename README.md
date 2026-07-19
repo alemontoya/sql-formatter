@@ -6,8 +6,9 @@ formats losslessly off a custom tokenizer (no SQL parsing library round-trip
 to drop things), and supports both conventional indented layout and
 "river style" keyword-alignment layout.
 
-This is a personal tool; the CLI is the only shipped interface today (no web
-UI / VS Code / DBeaver integration yet).
+This is a personal tool. Two interfaces are shipped today: a CLI (below) and
+a web UI ([web/README.md](web/README.md)) — no VS Code / DBeaver integration
+yet.
 
 ## Install
 
