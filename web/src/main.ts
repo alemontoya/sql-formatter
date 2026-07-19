@@ -2,13 +2,29 @@ import "./style.css";
 import { format, inferStyleTemplate } from "@sql-formatter/core";
 import type { StyleTemplate, Dialect, InferResult } from "@sql-formatter/core";
 import { BUNDLED_TEMPLATES } from "./templates";
+import { loadSavedTemplates, saveCustomTemplate, deleteCustomTemplate, getActiveSelection, setActiveSelection } from "./storage";
 
 const DIALECTS: Dialect[] = ["generic", "postgres", "snowflake", "sqlite"];
 
+const THEME_KEY = "sqlFormatter.theme";
+function currentTheme(): "light" | "dark" {
+  const stored = localStorage.getItem(THEME_KEY);
+  if (stored === "light" || stored === "dark") return stored;
+  return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+}
+function applyStoredTheme(): void {
+  const stored = localStorage.getItem(THEME_KEY);
+  if (stored === "light" || stored === "dark") document.documentElement.setAttribute("data-theme", stored);
+}
+applyStoredTheme();
+
 document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   <header>
-    <h1>SQL Formatter</h1>
-    <p>Formats SQL entirely in your browser — nothing is sent anywhere.</p>
+    <div>
+      <h1>SQL Formatter</h1>
+      <p>Formats SQL entirely in your browser — nothing is sent anywhere.</p>
+    </div>
+    <button type="button" id="theme-toggle" aria-label="Toggle light/dark theme"></button>
   </header>
 
   <div class="tabs">
@@ -24,11 +40,12 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <option value="default">Default</option>
           <option value="compact">Compact</option>
           <option value="river">River</option>
-          <option value="custom" id="custom-option" disabled>Custom (uploaded/inferred)</option>
+          <optgroup label="Saved" id="saved-optgroup"></optgroup>
         </select>
       </label>
       <input type="file" id="template-file" accept="application/json,.json" hidden />
       <button type="button" class="secondary" id="upload-template-btn">Upload template…</button>
+      <button type="button" class="secondary" id="delete-template-btn" hidden>Delete saved template</button>
       <button type="button" id="format-btn">Format</button>
       <button type="button" class="secondary" id="copy-btn">Copy output</button>
       <span class="template-info" id="template-info"></span>
@@ -83,6 +100,24 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
 `;
 
 // ---------------------------------------------------------------------------
+// Theme
+
+const themeToggle = document.querySelector<HTMLButtonElement>("#theme-toggle")!;
+
+function renderThemeToggle(): void {
+  themeToggle.textContent = currentTheme() === "dark" ? "🌙" : "☀️";
+}
+
+themeToggle.addEventListener("click", () => {
+  const next = currentTheme() === "dark" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", next);
+  localStorage.setItem(THEME_KEY, next);
+  renderThemeToggle();
+});
+
+renderThemeToggle();
+
+// ---------------------------------------------------------------------------
 // Tabs
 
 const tabs = document.querySelectorAll<HTMLButtonElement>(".tab");
@@ -109,9 +144,10 @@ function activateTab(name: keyof typeof panels): void {
 // Format panel
 
 const templateSelect = document.querySelector<HTMLSelectElement>("#template-select")!;
-const customOption = document.querySelector<HTMLOptionElement>("#custom-option")!;
+const savedOptgroup = document.querySelector<HTMLOptGroupElement>("#saved-optgroup")!;
 const templateFileInput = document.querySelector<HTMLInputElement>("#template-file")!;
 const uploadTemplateBtn = document.querySelector<HTMLButtonElement>("#upload-template-btn")!;
+const deleteTemplateBtn = document.querySelector<HTMLButtonElement>("#delete-template-btn")!;
 const templateInfo = document.querySelector<HTMLElement>("#template-info")!;
 const formatBtn = document.querySelector<HTMLButtonElement>("#format-btn")!;
 const copyBtn = document.querySelector<HTMLButtonElement>("#copy-btn")!;
@@ -136,11 +172,27 @@ function renderTemplateInfo(): void {
   templateInfo.textContent = `${t.name} (${t.id}) · ${t.dialect} · ${t.style.layout.mode}`;
 }
 
-function setActiveTemplate(template: StyleTemplate, selectValue: string, customLabel = ""): void {
+function renderSavedOptions(selected?: string): void {
+  savedOptgroup.innerHTML = loadSavedTemplates()
+    .map((s) => `<option value="custom:${escapeHtml(s.template.id)}">${escapeHtml(s.label)}</option>`)
+    .join("");
+  if (selected) templateSelect.value = selected;
+  deleteTemplateBtn.hidden = !templateSelect.value.startsWith("custom:");
+}
+
+/** Sets the active template and, unless `persist` is false (used when restoring
+ * a selection that's already in storage), saves it under `customLabel`. */
+function setActiveTemplate(
+  template: StyleTemplate,
+  selectValue: string,
+  options: { customLabel?: string; persist?: boolean } = {},
+): void {
   activeTemplate = template;
-  customOption.disabled = selectValue !== "custom";
-  customOption.textContent = customLabel ? `Custom (${customLabel})` : "Custom (uploaded/inferred)";
-  templateSelect.value = selectValue;
+  if (options.customLabel && options.persist !== false) {
+    saveCustomTemplate(options.customLabel, template);
+  }
+  renderSavedOptions(selectValue);
+  setActiveSelection(selectValue);
   renderTemplateInfo();
   runFormat();
 }
@@ -162,10 +214,14 @@ function runFormat(): void {
 
 templateSelect.addEventListener("change", () => {
   const value = templateSelect.value;
-  if (value === "custom") {
-    renderTemplateInfo();
-    runFormat();
-    return;
+  deleteTemplateBtn.hidden = !value.startsWith("custom:");
+  if (value.startsWith("custom:")) {
+    const id = value.slice("custom:".length);
+    const saved = loadSavedTemplates().find((s) => s.template.id === id);
+    if (saved) {
+      setActiveTemplate(saved.template, value, { persist: false });
+      return;
+    }
   }
   setActiveTemplate(BUNDLED_TEMPLATES[value], value);
 });
@@ -179,12 +235,18 @@ templateFileInput.addEventListener("change", async () => {
     const text = await file.text();
     const parsed = JSON.parse(text) as StyleTemplate;
     if (!parsed?.style?.layout) throw new Error("Not a valid style template (missing `style` fields).");
-    setActiveTemplate(parsed, "custom", file.name);
+    setActiveTemplate(parsed, `custom:${parsed.id}`, { customLabel: file.name });
   } catch (err) {
     showFormatError(`Couldn't load template: ${err instanceof Error ? err.message : String(err)}`);
   } finally {
     templateFileInput.value = "";
   }
+});
+
+deleteTemplateBtn.addEventListener("click", () => {
+  if (!templateSelect.value.startsWith("custom:")) return;
+  deleteCustomTemplate(templateSelect.value.slice("custom:".length));
+  setActiveTemplate(BUNDLED_TEMPLATES.default, "default");
 });
 
 formatBtn.addEventListener("click", runFormat);
@@ -198,7 +260,28 @@ copyBtn.addEventListener("click", async () => {
   setTimeout(() => (copyBtn.textContent = original), 1200);
 });
 
-renderTemplateInfo();
+restoreActiveTemplate();
+
+function restoreActiveTemplate(): void {
+  const saved = getActiveSelection();
+  renderSavedOptions();
+  if (!saved) {
+    renderTemplateInfo();
+    return;
+  }
+  if (saved.startsWith("custom:")) {
+    const id = saved.slice("custom:".length);
+    const match = loadSavedTemplates().find((s) => s.template.id === id);
+    if (match) {
+      setActiveTemplate(match.template, saved, { persist: false });
+      return;
+    }
+  } else if (BUNDLED_TEMPLATES[saved]) {
+    setActiveTemplate(BUNDLED_TEMPLATES[saved], saved);
+    return;
+  }
+  renderTemplateInfo();
+}
 
 // ---------------------------------------------------------------------------
 // Infer panel
@@ -258,7 +341,8 @@ inferBtn.addEventListener("click", () => {
 
 useTemplateBtn.addEventListener("click", () => {
   if (!lastInferResult) return;
-  setActiveTemplate(lastInferResult.template, "custom", lastInferResult.template.name);
+  const template = lastInferResult.template;
+  setActiveTemplate(template, `custom:${template.id}`, { customLabel: template.name });
   sqlInput.value = inferInput.value;
   activateTab("format");
   runFormat();

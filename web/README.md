@@ -27,8 +27,10 @@ npm run build -w web
 ```
 
 Output goes to `web/dist/`. `npm run preview -w web` serves that build
-locally to sanity-check it before deploying anywhere (there's no deploy
-step set up yet — see [HANDOFF.md](../HANDOFF.md)).
+locally. There's deliberately no public deploy step — this stays
+local-only (dev server / `--host` for LAN access / a personal VPN for
+remote access), see [HANDOFF.md](../HANDOFF.md)'s "Deploy/hosting decided
+against" section for why.
 
 ## Using it
 
@@ -40,7 +42,13 @@ live as you type. Pick a template from the dropdown:
   directly, so it's always in sync with the CLI's bundled set).
 - `Custom` — upload your own style-template JSON (see
   `schema/style-template.schema.json`), or apply one produced by the Infer
-  tab below.
+  tab below. Custom templates are saved to `localStorage` (up to 20, most
+  recent first) so they, and whichever template was active, survive a page
+  reload. Use "Delete saved template" to remove one.
+
+A theme toggle (🌙/☀️) in the top-right switches between dark and light —
+defaults to your OS preference, and remembers an explicit choice in
+`localStorage` across reloads.
 
 **Infer style from example tab** — already have a script formatted the way
 you like? Paste it in, fill in an id/name/dialect, and click "Infer style"

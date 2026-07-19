@@ -1365,13 +1365,10 @@ via the Browser pane rather than jsdom/Playwright, and there's no
 formatting *logic* in `web/` to unit-test, only DOM wiring around calls
 into the already-tested core).
 
-**Not yet done**: no build/deploy step for actually hosting the page
-anywhere (it's dev-server-only so far — `npm run preview -w web` serves
-the production build locally but nothing is deployed); no persistence of
-uploaded/inferred custom templates across a page reload (in-memory only,
-matches "personal local tool" scope, revisit if it becomes annoying in
-practice); no dark/light theme toggle (dark-only, matches the editor-tool
-aesthetic, not a general-audience page).
+**Not yet done** (as of the initial build): no build/deploy step for
+actually hosting the page anywhere; no persistence of uploaded/inferred
+custom templates across a page reload; no dark/light theme toggle. The
+latter two were picked up next — see the dated section below.
 
 ## VS Code extension and DBeaver integration built — every planned interface now shipped
 
@@ -1474,3 +1471,70 @@ All `core`+`cli` tests (192) and the new `vscode-extension` tests (13) pass;
 `npm run build -w vscode-extension` (tsc + esbuild) and the existing
 `npm run build -w web`/`-w core`/`-w cli` all succeed from a clean
 `npm install` at the repo root.
+
+## Web UI polish: template persistence + light theme
+
+Two of the three items on `web/`'s original "Not yet done" list, picked up
+together since both touch the same `localStorage`-persistence pattern.
+
+**Custom template persistence** — new `web/src/storage.ts`:
+`loadSavedTemplates()`/`saveCustomTemplate()`/`deleteCustomTemplate()`
+against a `sqlFormatter.customTemplates` localStorage key (array, capped at
+20, most-recent-first, keyed by template `id` so re-uploading/re-inferring
+the same id replaces rather than duplicates), plus
+`getActiveSelection()`/`setActiveSelection()` against a separate
+`sqlFormatter.activeTemplate` key remembering which template (bundled name
+or `custom:<id>`) was active. `main.ts`'s template `<select>` gained a
+"Saved" `<optgroup>`, populated from storage and re-rendered whenever a
+template is uploaded/inferred/deleted, plus a "Delete saved template"
+button (shown only when a saved template is the current selection). On
+load, `restoreActiveTemplate()` reads the remembered selection and
+re-applies it — bundled or custom — before the first render, so reloading
+the page mid-session no longer resets to Default. Verified via the Browser
+pane: inferred a template, confirmed both `localStorage` keys were written
+correctly, reloaded the page and confirmed the custom template reappeared
+in the dropdown, was selected, and its info line/name matched: then
+deleted it and confirmed it reverted cleanly to Default with the entry
+gone from the dropdown.
+
+**Light theme** — `style.css` restructured from a single hardcoded dark
+palette into three blocks sharing the same CSS variable names (`--bg`,
+`--panel`, `--editor-bg`, `--border`, `--text`, `--muted`, `--accent`,
+`--accent-text`, `--error`, `--error-bg`): a dark default in `:root`, a
+`@media (prefers-color-scheme: light)` block scoped to
+`:root:not([data-theme="dark"])` so it only applies absent an explicit
+override, and explicit `:root[data-theme="light"]`/`[data-theme="dark"]`
+blocks for a user's manual choice. A 🌙/☀️ toggle button in the header
+(`main.ts`) flips `document.documentElement`'s `data-theme` attribute and
+persists the choice to a `sqlFormatter.theme` localStorage key, applied
+before the DOM is built (`applyStoredTheme()` runs first thing) so there's
+no flash of the wrong theme on load with a stored preference. Verified in
+the Browser pane: toggled to light, confirmed `getComputedStyle` reflected
+the new background color and both the DOM attribute and localStorage key
+updated, reloaded and confirmed the light theme persisted.
+
+**Browser pane gotcha hit during this verification pass**: the `computer`
+tool's `screenshot` action timed out repeatedly against an otherwise
+perfectly healthy page (server logs clean, no console errors) — worked
+around by verifying through `get_page_text`, `read_page`, and
+`javascript_tool` instead (reading `localStorage`/computed styles directly
+rather than eyeballing a render). Worth trying a screenshot again first if
+this recurs before assuming the app itself is broken.
+
+**Deploy/hosting decided against, deliberately, not just deferred**: asked
+the user directly, since publishing anything to a public URL needs their
+sign-off, not an autonomous call. The repo is private, and GitHub Pages
+needs either a public repo or a paid plan to serve from a private one — the
+real tradeoff underneath "how do we host this" turned out to be "do you
+want the app's source visible on GitHub," since the app is fully
+client-side and never sends SQL anywhere regardless of where the static
+files are served from (hosting the *tool* publicly is not the same as
+hosting *data* publicly). Given that framing, the user chose to stay
+local-only rather than make the repo public or add a third-party
+deploy target (Vercel/Netlify/Cloudflare Pages, which could deploy from
+the private repo as-is). `npm run dev -w web` / `npm run preview -w web`
+remain the only ways to run it — reachable only from this machine unless
+`--host` is passed to open it to the LAN, or a VPN (e.g. Tailscale) is set
+up separately for remote access without publishing anything. Revisit if
+this changes — nothing about the current build blocks deploying later, the
+`web/dist/` output is already a plain static site.
