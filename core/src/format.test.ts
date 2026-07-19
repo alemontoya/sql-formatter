@@ -352,6 +352,102 @@ describe("format (window function OVER (...) wrapping)", () => {
   });
 });
 
+describe("format (alignment.aliases / alignment.assignments)", () => {
+  function withAlignment(aliases: boolean, assignments: boolean): StyleTemplate {
+    return { ...defaultTemplate, style: { ...defaultTemplate.style, alignment: { aliases, assignments } } };
+  }
+
+  it("aliases: false (default) leaves AS ungapped", () => {
+    const sql = "select a as first_name, bb as last_name, ccc as email_address from users;";
+    const out = format(sql, withAlignment(false, false));
+    expect(out).toContain("a AS first_name,");
+  });
+
+  it("aliases: true pads each item's AS to a shared column", () => {
+    const sql = "select a as first_name, bb as last_name, ccc as email_address from users;";
+    const out = format(sql, withAlignment(true, false));
+    expect(out).toBe(
+      ["SELECT", "  a   AS first_name,", "  bb  AS last_name,", "  ccc AS email_address", "FROM users;", ""].join(
+        "\n"
+      )
+    );
+  });
+
+  it("aliases: true leaves an item with no AS unpadded, without breaking the others' alignment", () => {
+    const sql = "select a as first_name, some_long_column_name, ccc as email from users;";
+    const out = format(sql, withAlignment(true, false));
+    expect(out).toBe(
+      [
+        "SELECT",
+        "  a   AS first_name,",
+        "  some_long_column_name,",
+        "  ccc AS email",
+        "FROM users;",
+        "",
+      ].join("\n")
+    );
+  });
+
+  it("aliases: true does not align an inline (non-wrapped) list — nothing to align into", () => {
+    const compactAligned: StyleTemplate = {
+      ...compactTemplate,
+      style: { ...compactTemplate.style, alignment: { aliases: true, assignments: false } },
+    };
+    const sql = "select a as x, b as y from t;";
+    const out = format(sql, compactAligned);
+    expect(out).toContain("a as x, b as y");
+  });
+
+  it("assignments: true pads each SET item's = to a shared column", () => {
+    const sql = "update users set first_name = 'a', last_name_extended = 'b', email = 'c' where id = 1;";
+    const out = format(sql, withAlignment(false, true));
+    expect(out).toBe(
+      [
+        "UPDATE users",
+        "SET",
+        "  first_name         = 'a',",
+        "  last_name_extended = 'b',",
+        "  email              = 'c'",
+        "WHERE id = 1;",
+        "",
+      ].join("\n")
+    );
+  });
+
+  it("assignments: true does not affect a SELECT list's AS aliases", () => {
+    const sql = "select a as x, bb as y from t;";
+    const out = format(sql, withAlignment(false, true));
+    expect(out).toBe(["SELECT", "  a AS x,", "  bb AS y", "FROM t;", ""].join("\n"));
+  });
+
+  it("both settings work together in keywordAlign mode once the list wraps", () => {
+    const riverAligned: StyleTemplate = {
+      ...riverTemplate,
+      style: { ...riverTemplate.style, alignment: { aliases: true, assignments: false } },
+    };
+    const sql =
+      "select some_reasonably_long_expr_a as first_name, some_reasonably_long_expr_bb as last_name, some_reasonably_long_expr_ccc as email_address from users;";
+    const out = format(sql, riverAligned);
+    expect(out).toContain("some_reasonably_long_expr_a   AS first_name,");
+    expect(out).toContain("       some_reasonably_long_expr_bb  AS last_name");
+    expect(out).toContain("       some_reasonably_long_expr_ccc AS email_address");
+  });
+
+  it("is idempotent when aliases align", () => {
+    const sql = "select a as first_name, bb as last_name, ccc as email_address from users;";
+    const once = format(sql, withAlignment(true, false));
+    const twice = format(once, withAlignment(true, false));
+    expect(twice).toBe(once);
+  });
+
+  it("is idempotent when assignments align", () => {
+    const sql = "update users set first_name = 'a', last_name_extended = 'b' where id = 1;";
+    const once = format(sql, withAlignment(false, true));
+    const twice = format(once, withAlignment(false, true));
+    expect(twice).toBe(once);
+  });
+});
+
 describe("format (parentheses.subqueryOpenParenSameLine)", () => {
   function withSubqueryParen(sameLine: boolean): StyleTemplate {
     return {

@@ -686,6 +686,68 @@ function printListItem(item: Node[], level: number, ctx: Ctx): string {
   return printArithmeticChain(item, level, ctx, level + 1);
 }
 
+/** Index of a top-level `AS` keyword leaf in a list item, or -1. Only looks
+ * at this item's own top-level nodes — an `AS` nested inside a group (e.g.
+ * `CAST(x AS int)`) is invisible here since a group is a single `Node`, not
+ * flattened into the item's sequence. */
+function topLevelAsIndex(item: Node[]): number {
+  return item.findIndex((n) => isKeywordLeaf(n, "AS"));
+}
+
+/** Index of a top-level `=` operator leaf in a list item, or -1. Same
+ * "only this item's own top-level nodes" scoping as `topLevelAsIndex`. */
+function topLevelEqualsIndex(item: Node[]): number {
+  return item.findIndex((n) => n.kind === "leaf" && n.leaf.token.type === "operator" && n.leaf.token.value === "=");
+}
+
+/** Shared logic for `alignment.aliases`/`alignment.assignments`: renders a
+ * list the same way `printList`+`printListItem` would (same wrap-or-not
+ * decision, same comma placement), but once wrapped one-per-line, pads each
+ * item's text before `splitIndex(item)` out to the widest such prefix in the
+ * list, so whatever comes after (an `AS alias`, or `= value`) lines up in a
+ * shared column. Only single-line items (no internal newline from the
+ * item's own overflow wrapping) with a `splitIndex` match participate in
+ * padding — an item with neither prints unchanged, same as without
+ * alignment. Alignment is meaningless for an inline (non-wrapped) list — a
+ * one-line list has no column to align into — so that case falls back to
+ * plain `printListItem` rendering untouched. */
+function printAlignedList(items: Node[][], level: number, ctx: Ctx, splitIndex: (item: Node[]) => number): string {
+  const rendered = items.map((item) => printListItem(item, level, ctx));
+  const inline = rendered.join(", ");
+  const shouldWrap =
+    ctx.style.lists.onePerLine ||
+    items.length >= ctx.style.lists.wrapThresholdItems ||
+    indentStr(ctx, level).length + inline.length > ctx.style.lineWidth ||
+    rendered.some((r) => r.includes("\n"));
+
+  if (!shouldWrap) return inline;
+
+  const splits = items.map((item, i) => {
+    if (rendered[i].includes("\n")) return null;
+    const splitIdx = splitIndex(item);
+    if (splitIdx === -1) return null;
+    return { prefix: printSeq(item.slice(0, splitIdx), level, ctx), suffix: printSeq(item.slice(splitIdx), level, ctx) };
+  });
+  const widest = Math.max(0, ...splits.filter((s): s is NonNullable<typeof s> => s !== null).map((s) => s.prefix.length));
+
+  const finalRendered = items.map((item, i) => {
+    const split = splits[i];
+    return split ? split.prefix + " ".repeat(widest - split.prefix.length + 1) + split.suffix : rendered[i];
+  });
+
+  const b = new Builder();
+  finalRendered.forEach((text, i) => {
+    if (b.out.length > 0) b.newline(ctx, level);
+    const isLast = i === finalRendered.length - 1;
+    if (ctx.style.commas.style === "leading") {
+      b.raw((i === 0 ? "" : ", ") + text);
+    } else {
+      b.raw(text + (isLast ? "" : ","));
+    }
+  });
+  return b.out;
+}
+
 function printClauseBody(clause: Clause, level: number, ctx: Ctx): string {
   if (clause.keyword === "VALUES") {
     const tuples = splitTopLevelCommas(clause.body);
@@ -693,6 +755,12 @@ function printClauseBody(clause: Clause, level: number, ctx: Ctx): string {
   }
   if (LIST_CLAUSES.has(clause.keyword)) {
     const items = splitTopLevelCommas(clause.body);
+    if (ctx.style.alignment.aliases && (clause.keyword === "SELECT" || clause.keyword === "RETURNING")) {
+      return printAlignedList(items, level, ctx, topLevelAsIndex);
+    }
+    if (ctx.style.alignment.assignments && clause.keyword === "SET") {
+      return printAlignedList(items, level, ctx, topLevelEqualsIndex);
+    }
     return printList(items, level, ctx, (item) => printListItem(item, level, ctx));
   }
   if (CONDITION_CLAUSES.has(clause.keyword)) {

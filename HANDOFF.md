@@ -244,8 +244,11 @@ not template-specific hacks:
   group's wrap decision — a real architectural change (affects
   `printGroupItems` too), out of scope for this fix; flagging rather than
   scope-creeping into it.
-- `alignment.aliases` / `alignment.assignments` aren't implemented. Also not
-  attempted by `inferStyleTemplate()` — always defaulted, 0 confidence.
+- ~~`alignment.aliases` / `alignment.assignments` aren't implemented...~~
+  **Implemented** — see the dated section below. Still not attempted by
+  `inferStyleTemplate()` (always defaulted, 0 confidence) — no real fixture
+  uses either convention, so there's no source-position signal to detect it
+  from; would need a genuine example before it's worth guessing at.
 - A comment attached directly to a bare `;` (rare — a comment between the
   last real token and the semicolon) would currently be dropped, since
   `splitStatements()` in `tree.ts` discards the `;` leaf entirely rather
@@ -989,3 +992,70 @@ way, and idempotency. All 132 `core` tests total pass (126 pre-existing +
 idempotently after reformatting with the new wrapping active — see the
 "Known v1 gaps" entry above for the narrower residual line-length gap this
 surfaced (not fixed here, flagged as a separate architectural limitation).
+
+## `alignment.aliases` / `alignment.assignments` implemented
+
+Next item on the "Known v1 gaps" list. Both fields were schema-required but
+had no printer behavior at all — set either to `true` and output was
+identical to `false`. Unlike the two previous items on this list, neither
+has a real fixture to verify against (`inferStyleTemplate()` never sees
+enough signal to infer them, confirmed 0-confidence in all fixture runs so
+far), so the target behavior here is a direct reading of the schema's own
+description text (`"Align AS aliases into a column across a list"` /
+`"Align = signs into a column"`), not something reverse-engineered from a
+real example the way `keywordAlign`'s alignment rules were.
+
+New shared helper `printAlignedList()` in `printer.ts`: renders a list
+exactly like `printList`+`printListItem` would (same wrap-or-not decision —
+`lists.onePerLine`/`wrapThresholdItems`/`lineWidth` overflow/any item
+already multi-line — so alignment never changes *whether* a list wraps,
+only how it looks once it does), then, only if the list actually wraps
+one-per-line, finds each item's split point via a caller-supplied
+`splitIndex(item)` function and pads every item's pre-split text out to the
+widest one in the list. Two split-point finders: `topLevelAsIndex()` (first
+top-level `AS` keyword leaf — "top-level" matters so `CAST(x AS int)`'s
+nested `AS` inside the group node doesn't get picked up) for
+`alignment.aliases`, and `topLevelEqualsIndex()` (first top-level `=`
+operator leaf) for `alignment.assignments`. An item with no matching split
+point (no alias, or — shouldn't happen in valid SQL, but handled
+defensively — a `SET` item with no `=`) prints unpadded, same as without
+alignment, rather than breaking the rest of the list's alignment. An item
+that itself renders multi-line (its own overflow wrapping) is also excluded
+from padding, since there's no single column position to align in a
+multi-line item.
+
+Wired into `printClauseBody()`: `alignment.aliases` applies to `SELECT` and
+`RETURNING` (the two `LIST_CLAUSES` where `AS alias` commonly appears);
+`alignment.assignments` applies to `SET` (`UPDATE ... SET col = val, ...`).
+The schema description also mentions `assignments` covering "INSERT column
+lists," but an `INSERT INTO t (a, b)` column list has no `=` in it at all —
+that phrase is either imprecise or referring to something else entirely
+(possibly a bigger, unrelated feature: aligning `VALUES` tuples column-wise
+across multiple rows). Left unimplemented and flagged rather than guessed
+at; `assignments` is scoped strictly to `SET`, the one unambiguous case the
+description names.
+
+Confirmed correct in both layout modes, including `keywordAlign` (alignment
+computed independently of, and doesn't disturb, the family-alignment
+column) — e.g. a 3-column `SELECT` with long expressions and
+`alignment.aliases: true` under `river.json` wraps and aligns `AS` while
+`FROM`/`WHERE` still right-pad to their own shared column normally.
+
+9 new tests in `format.test.ts`'s `describe("format (alignment.aliases /
+alignment.assignments)")`: aliases off (unchanged baseline), aliases on
+(exact full-output column check), an item with no `AS` staying unpadded
+without breaking the others, an inline (non-wrapped) list staying untouched
+(nothing to align into), assignments on (`SET`, exact column check),
+assignments not leaking into an unrelated `SELECT`'s aliases, both working
+together in `keywordAlign` mode once wrapped, and idempotency for both
+settings. All 141 `core` tests pass (132 pre-existing + 9 new); 168 total
+across `core`+`cli`. Verified manually against the CLI too, including mixed
+alias/no-alias lists and idempotency round-trips for both settings.
+
+**Known limitation, not fixed**: alignment padding doesn't account for
+`commas.style: "leading"` — a leading `", "` prefix on continuation lines
+shifts those items' visible column by 2 characters relative to the first
+item, which has no such prefix. Both bundled templates needing this feature
+would use trailing commas in practice; flagging rather than fixing blind,
+since there's no real example to confirm what the "correct" leading-comma
++ alignment interaction should even look like.
