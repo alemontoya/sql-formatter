@@ -151,6 +151,32 @@ see the dated section below for multi-file semantics.
 -h, --help
 ```
 
+### Multi-file / glob examples
+
+```
+# reformat every .sql file under migrations/, in place
+sql-format --write 'migrations/*.sql'
+
+# reformat an entire project tree, in place
+sql-format --write '**/*.sql'
+
+# explicit file list works the same way as a glob (same resolveFiles() path)
+sql-format --write a.sql b.sql c.sql
+
+# CI/pre-commit gate across a whole directory: exits 1 and lists which
+# files would be reformatted on stderr, without touching any of them
+sql-format --check '**/*.sql'
+```
+
+Quote glob patterns so the shell doesn't expand them first — `sql-format`
+does its own glob expansion (`resolveFiles()` in `cli.ts`, backed by
+`node:fs`'s built-in `globSync`), which also lets `--check`/`--write` report
+back exactly which of the matched files needed changes. A pattern matching
+exactly one file behaves identically to passing that file directly (stdout
+by default); two or more matched files requires `--write` or `--check`. See
+the dated "CLI multi-file/glob support" section below for the full design
+rationale.
+
 Bundled template names resolve to `templates/<name>.json` at the repo root
 via a relative `import.meta.url` lookup (`resolveTemplatePath()` in
 `cli.ts`) — this only works because the CLI lives inside this monorepo next
