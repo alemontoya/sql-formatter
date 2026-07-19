@@ -243,10 +243,8 @@ added to `KEYWORDS`.
    See the dated section below.
 2. Consider whether the CLI needs a way to format multiple files at once
    (e.g. a glob argument) — v1 only takes a single file or stdin.
-3. Revisit `GROUP BY`/`ORDER BY`/`HAVING` alignment in `keywordAlign` mode
-   against more real examples if the dynamic-widening behavior (see the
-   river-style section below) ever looks wrong in practice — the fixtures
-   only exercised `GROUP BY`, never `HAVING`/`ORDER BY` wider than `SELECT`.
+3. ~~Revisit `GROUP BY`/`ORDER BY`/`HAVING` alignment...~~ **Checked, no bug
+   found.** See the dated section below.
 4. An LLM/pattern-based fallback for `inferStyleTemplate()` was explicitly
    deferred (see the river-style/inference section below) — only worth
    picking up if a real example shows up whose style genuinely doesn't
@@ -771,3 +769,37 @@ lines exactly across three statement boundaries, and idempotency (reformatting
 `"preserve"` output produces identical output). Verified manually against the
 CLI too, including a 3-statement file with 0/1/3 blank-line gaps and a
 round-trip idempotency check.
+
+## `GROUP BY`/`HAVING`/`ORDER BY` `keywordAlign` alignment — checked, no bug found
+
+Investigated the flagged next-step: only `GROUP BY` had real-fixture coverage
+for the "borrow WHERE's alignment width" behavior (`canonicalFamilyWord()` in
+`printer.ts`); `HAVING`/`ORDER BY` were unverified and untested.
+
+**Found no bug** — re-measured the real fixture that already has `GROUP BY`
+(`financial-forecast-feed.sql:59-60`, `WHERE pr.plan_family != 'Reason'` /
+`GROUP BY 1, 2`) at the exact character level: both keywords start at the
+identical leading column (9 spaces), even though `GROUP BY` (8 chars) is
+three characters longer than `WHERE` (5). That confirms what "borrow a
+width" actually means for river style: the borrower's *leading* column
+matches the reference's, not a shared *content* column past the keyword —
+same shape as the already-verified `CROSS JOIN`/`FROM` case. A `printer.ts`
+comment near the align-mode body-gluing code (`"every other clause already
+ends exactly at keywordEndCol via familyPad, so one space suffices"`) reads
+as if content columns should line up, which looked like a bug for two-word
+borrowers (`GROUP BY`/`ORDER BY`) or length-mismatched ones (`HAVING`, 6
+chars vs. `WHERE`'s 5) until checked against the real fixture — that
+comment is describing the single-word/matching-length case (`FROM`,
+`WHERE` itself) correctly but doesn't generalize, and the actual behavior it
+documents (shared leading column) is what's both implemented and correct.
+`HAVING`/`ORDER BY` run through the identical `canonicalFamilyWord()` +
+`familyPad()` codepath as `GROUP BY`, so the same verified behavior applies
+to them with no special-casing needed.
+
+Added 2 new tests to `format.test.ts`'s `keywordAlign layout` describe block
+to lock this in (previously `HAVING`/`ORDER BY` had zero `keywordAlign`
+coverage): one with `WHERE` present (mirrors the real fixture's exact
+column arithmetic), one without `WHERE` at all (confirms `GROUP BY`/
+`HAVING`/`ORDER BY` still borrow the literal `"WHERE"`-width reference and
+widen `FROM` to match it, even when no actual `WHERE` clause exists to
+borrow from).

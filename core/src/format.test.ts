@@ -620,6 +620,40 @@ describe("format (keywordAlign layout)", () => {
     );
   });
 
+  it("aligns GROUP BY/HAVING/ORDER BY to WHERE's leading column, not their own (longer) word length", () => {
+    // Verified against a real fixture (financial-forecast-feed.sql, "WHERE
+    // pr.plan_family != 'Reason'" / "GROUP BY 1, 2"): both keywords start at
+    // the identical leading column (9 spaces in) even though "GROUP BY" (8
+    // chars) is longer than "WHERE" (5) — they borrow WHERE's *starting*
+    // column, the same way JOIN variants borrow FROM's, not a shared body
+    // content column past the keyword. HAVING (6 chars) and ORDER BY (8
+    // chars) follow the identical codepath (canonicalFamilyWord), so this
+    // also locks in behavior for the two keywords no real fixture exercises.
+    const sql = "select a, count(*) as n from t where active = true group by a having count(*) > 1 order by n desc;";
+    expect(format(sql, riverTemplate)).toBe(
+      [
+        "SELECT a, COUNT(*) AS n",
+        "  FROM t",
+        " WHERE active = true",
+        " GROUP BY a",
+        " HAVING COUNT(*) > 1",
+        " ORDER BY n DESC;",
+        "",
+      ].join("\n")
+    );
+  });
+
+  it("widens GROUP BY/HAVING/ORDER BY's shared leading column when SELECT/FROM are the narrower reference", () => {
+    // Same borrow-WHERE's-column mechanism, but here WHERE isn't present at
+    // all — GROUP BY/HAVING/ORDER BY still borrow the literal "WHERE"
+    // reference width (5), which happens to be wider than FROM's 4, so FROM
+    // right-pads out one extra column to match.
+    const sql = "select a from t group by a having count(*) > 1 order by a;";
+    expect(format(sql, riverTemplate)).toBe(
+      ["SELECT a", "  FROM t", " GROUP BY a", " HAVING COUNT(*) > 1", " ORDER BY a;", ""].join("\n")
+    );
+  });
+
   it("is idempotent", () => {
     const sql =
       "with t as (select a, b from x where a > 1 and b < 2) select id, name from t join y on t.id = y.id where active = true;";
