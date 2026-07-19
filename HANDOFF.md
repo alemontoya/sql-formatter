@@ -224,16 +224,11 @@ not template-specific hacks:
 
 ## Known v1 gaps (deliberate scope cuts, not bugs — don't "fix" without asking)
 
-- `parentheses.subqueryOpenParenSameLine: false` isn't implemented (always
-  behaves as `true`, which is what both current templates use anyway, so
-  there's no visible gap yet — but it'll surface once someone sets it false).
-  **In `keywordAlign` mode this field is ignored entirely** — `printGroup`'s
-  align-mode branch always glues `(` to the subquery's first keyword,
-  regardless of this setting (see the river-style section below for why:
-  it's structurally required for the alignment column to be computable).
-  `inferStyleTemplate()` still infers a best-effort value for it from the
-  raw example text, but it has no effect on output once `layout.mode` is
-  `keywordAlign`.
+- ~~`parentheses.subqueryOpenParenSameLine: false` isn't implemented...~~
+  **Implemented** in `indent` layout mode — see the dated section below.
+  Still ignored entirely in `keywordAlign` mode (unchanged, and intentional:
+  the alignment column is structurally computed from `(` being glued to the
+  subquery's first keyword — see the river-style section below).
 - No wrapping inside window-function `OVER(...)` clauses — they print as one
   long inline expression regardless of `lineWidth`.
 - `alignment.aliases` / `alignment.assignments` aren't implemented. Also not
@@ -246,9 +241,8 @@ not template-specific hacks:
   `default.json`/`compact.json` have it `false`, so untested there).
   `inferStyleTemplate()` *does* infer a best-effort value for it (checks
   whether any quoted identifier in the example didn't actually need
-  quoting), but — same as `subqueryOpenParenSameLine` above — inferring a
-  value for a field the printer doesn't act on yet is a no-op until someone
-  implements it.
+  quoting), but inferring a value for a field the printer doesn't act on yet
+  is a no-op until someone implements it.
 - `lists.wrapThresholdItems`, `commas.alignAfterComma`,
   `joins.multiConditionIndent`, `booleanOperators.indentContinuation` are
   **not attempted by `inferStyleTemplate()`** (always 0 confidence, value
@@ -880,3 +874,58 @@ a glob matching exactly one file falling through to the single-file/stdout
 path, and a glob matching zero files erroring clearly. All 19 pre-existing
 CLI tests still pass unchanged, confirming the single-file/stdin paths
 weren't disturbed.
+
+## `parentheses.subqueryOpenParenSameLine: false` implemented (in `indent` mode)
+
+Working through the "Known v1 gaps" list in order. This field was accepted
+by the schema and even inferred by `inferStyleTemplate()`, but the printer
+always behaved as if it were `true` — a subquery's `(` stayed glued to
+whatever preceded it (`WHERE id IN (`) regardless of the setting.
+
+`printGroup()`'s subquery detection (`firstInner` is `SELECT`/`WITH`) was
+inlined and duplicated the check inline; extracted into a shared
+`isSubqueryGroup()` so `printSeq()` — which is what actually decides
+spacing/line breaks around a group node — can ask the same question
+*before* calling `printGroup()`, not just after. `printSeq()`'s group
+branch now checks: is this a subquery, are we in `indent` layout mode (not
+`keywordAlign` — that mode structurally requires `(` glued to the
+subquery's first keyword, since the family-alignment column is computed
+from its position; unaffected, confirmed via a synthetic same-vs-false
+equality test), and is `subqueryOpenParenSameLine` false? If all three,
+it calls `b.newline(ctx, level)` before printing the group instead of
+`b.text(...)`, moving `(` onto its own fresh line at the current level
+rather than gluing it to the previous token:
+
+```sql
+-- true (default, unchanged)
+WHERE id IN (
+  SELECT user_id FROM orders WHERE total > 100
+)
+
+-- false (newly implemented)
+WHERE id IN
+(
+  SELECT user_id FROM orders WHERE total > 100
+)
+```
+
+`printGroup()` itself needed no change — its non-align subquery branch
+already produces `"(\n" + inner + "\n" + close`; the only missing piece was
+*whether a line break happens before that string is emitted*, which is a
+`printSeq()`-level decision (`printGroup()` doesn't know what preceded it).
+Every other `printGroup()` call site (function-call args, `IN (...)`
+lists, CTE bodies in `keywordAlign` mode via `printCteItem`) routes through
+`printSeq()`/`printChain()` for indent-mode groups or is align-mode-only, so
+this one change point covers all of them — confirmed for CTEs specifically
+(`WITH t AS (select ...)`, indent mode) since CTE items print via `printSeq`
+when not in `keywordAlign` mode.
+
+6 new tests in `format.test.ts`'s `describe("format
+(parentheses.subqueryOpenParenSameLine)")`: `true` still glues (regression
+guard), `false` moves `(` to its own line (exact full-output match), `false`
+also applies to a CTE, `false` doesn't affect an unrelated function call's
+parens, `keywordAlign` mode produces byte-identical output regardless of the
+setting, and idempotency. All 126 pre-existing `core` tests still pass
+unchanged (both bundled templates set this `true`, so default behavior for
+anyone not touching the field is untouched). Verified manually against the
+CLI too, including a CTE case and an idempotency round-trip.

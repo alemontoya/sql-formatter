@@ -256,7 +256,20 @@ function printSeq(nodes: Node[], level: number, ctx: Ctx, bodyStartsAtTableRef =
 
     if (node.kind === "group") {
       const isCallArgs = idx > 0 && classifyLeaf(nodes, idx - 1, bodyStartsAtTableRef) === "function";
-      b.text(printGroup(node, level, ctx), isCallArgs);
+      // keywordAlign mode structurally requires "(" glued to the subquery's
+      // first keyword (the family-alignment column is computed from its
+      // position) — subqueryOpenParenSameLine is ignored there entirely,
+      // same as printGroup's own keywordAlign branch below.
+      if (
+        isSubqueryGroup(node) &&
+        ctx.style.layout.mode !== "keywordAlign" &&
+        !ctx.style.parentheses.subqueryOpenParenSameLine
+      ) {
+        b.newline(ctx, level);
+        b.raw(printGroup(node, level, ctx));
+      } else {
+        b.text(printGroup(node, level, ctx), isCallArgs);
+      }
       const trailing = node.close.trailingComment;
       if (trailing) b.text(trailing.value);
       continue;
@@ -395,10 +408,18 @@ function printList(items: Node[][], level: number, ctx: Ctx, itemPrinter: (item:
   return b.out;
 }
 
-function printGroup(group: GroupNode, level: number, ctx: Ctx): string {
+/** A group is a subquery (as opposed to function-call args, an `IN (...)`
+ * list, etc.) when it opens with `SELECT`/`WITH`. Shared by `printGroup`
+ * and `printSeq` — the latter needs to know this *before* calling
+ * `printGroup`, to decide whether to break the line ahead of `(` for
+ * `parentheses.subqueryOpenParenSameLine: false`. */
+function isSubqueryGroup(group: GroupNode): boolean {
   const firstInner = group.content[0];
-  const isSubquery =
-    firstInner && isKeywordLeaf(firstInner, "SELECT") || (firstInner && isKeywordLeaf(firstInner, "WITH"));
+  return !!firstInner && (isKeywordLeaf(firstInner, "SELECT") || isKeywordLeaf(firstInner, "WITH"));
+}
+
+function printGroup(group: GroupNode, level: number, ctx: Ctx): string {
+  const isSubquery = isSubqueryGroup(group);
 
   if (isSubquery) {
     if (ctx.style.layout.mode === "keywordAlign") {

@@ -293,6 +293,67 @@ describe("format (parenthesized groups)", () => {
   });
 });
 
+describe("format (parentheses.subqueryOpenParenSameLine)", () => {
+  function withSubqueryParen(sameLine: boolean): StyleTemplate {
+    return {
+      ...defaultTemplate,
+      style: { ...defaultTemplate.style, parentheses: { subqueryOpenParenSameLine: sameLine } },
+    };
+  }
+
+  it("true (default): glues a subquery's ( to the calling line", () => {
+    const sql = "select id from users where id in (select user_id from orders where total > 100);";
+    const out = format(sql, withSubqueryParen(true));
+    expect(out).toContain("id IN (\n");
+    expect(out).not.toMatch(/id IN\n/);
+  });
+
+  it("false: moves a subquery's ( onto its own line", () => {
+    const sql = "select id from users where id in (select user_id from orders where total > 100);";
+    const out = format(sql, withSubqueryParen(false));
+    expect(out).toBe(
+      [
+        "SELECT id",
+        "FROM users",
+        "WHERE",
+        "  id IN",
+        "  (",
+        "    SELECT user_id",
+        "    FROM orders",
+        "    WHERE total > 100",
+        "  );",
+        "",
+      ].join("\n")
+    );
+  });
+
+  it("false: also applies to a CTE's subquery", () => {
+    const sql = "with t as (select id from users) select id from t;";
+    const out = format(sql, withSubqueryParen(false));
+    expect(out).toContain("t AS\n  (\n");
+  });
+
+  it("false: does not affect a plain function call's parens (not a subquery)", () => {
+    const sql = "select iff(a, b, c) from t;";
+    const out = format(sql, withSubqueryParen(false));
+    expect(out).toContain("IFF(a, b, c)");
+  });
+
+  it("is ignored in keywordAlign mode regardless of the setting (structurally required)", () => {
+    const sql = "select id from users where id in (select user_id from orders where total > 100);";
+    const sameLine: StyleTemplate = { ...riverTemplate, style: { ...riverTemplate.style, parentheses: { subqueryOpenParenSameLine: true } } };
+    const ownLine: StyleTemplate = { ...riverTemplate, style: { ...riverTemplate.style, parentheses: { subqueryOpenParenSameLine: false } } };
+    expect(format(sql, ownLine)).toBe(format(sql, sameLine));
+  });
+
+  it("is idempotent when false", () => {
+    const sql = "select id from users where id in (select user_id from orders where total > 100);";
+    const once = format(sql, withSubqueryParen(false));
+    const twice = format(once, withSubqueryParen(false));
+    expect(twice).toBe(once);
+  });
+});
+
 describe("format (JOIN)", () => {
   it("keeps a single-condition ON clause inline with the JOIN keyword", () => {
     const sql = "select o.id, c.name from orders o join customers c on o.customer_id = c.id;";
