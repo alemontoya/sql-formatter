@@ -22,6 +22,16 @@ function tempSqlFile(contents: string): string {
   return path;
 }
 
+/** Creates a fresh temp directory containing one file per `files` entry
+ * (key = filename, value = contents) and returns the directory path. */
+function tempSqlDir(files: Record<string, string>): string {
+  const dir = mkdtempSync(join(tmpdir(), "sql-format-cli-multi-test-"));
+  for (const [name, contents] of Object.entries(files)) {
+    writeFileSync(join(dir, name), contents);
+  }
+  return dir;
+}
+
 describe("sql-format CLI", () => {
   it("formats stdin to stdout with the default bundled template", () => {
     const { stdout, status } = runCli([], "select id, name from users where active = true;");
@@ -87,6 +97,74 @@ describe("sql-format CLI", () => {
     const { stderr, status } = runCli(["--template", "nonexistent"], "select 1;");
     expect(status).toBe(2);
     expect(stderr).toContain("Template not found");
+  });
+});
+
+describe("sql-format CLI (multi-file / glob)", () => {
+  it("a glob pattern matching multiple files without --write/--check is an error", () => {
+    const dir = tempSqlDir({ "a.sql": "select a from t;", "b.sql": "select b from t;" });
+    const { stderr, status } = runCli([join(dir, "*.sql")]);
+    expect(status).toBe(2);
+    expect(stderr).toContain("pass --write or --check");
+  });
+
+  it("--write formats every file matched by a glob pattern in place", () => {
+    const dir = tempSqlDir({ "a.sql": "select   a from t;", "b.sql": "select   b from t;" });
+    const { stdout, status } = runCli(["--write", join(dir, "*.sql")]);
+    expect(status).toBe(0);
+    expect(stdout).toBe("");
+    expect(readFileSync(join(dir, "a.sql"), "utf8")).toBe(["SELECT a", "FROM t;", ""].join("\n"));
+    expect(readFileSync(join(dir, "b.sql"), "utf8")).toBe(["SELECT b", "FROM t;", ""].join("\n"));
+  });
+
+  it("--write accepts multiple explicit file arguments, not just a glob", () => {
+    const dir = tempSqlDir({ "a.sql": "select a from t;", "b.sql": "select b from t;" });
+    const { status } = runCli(["--write", join(dir, "a.sql"), join(dir, "b.sql")]);
+    expect(status).toBe(0);
+    expect(readFileSync(join(dir, "a.sql"), "utf8")).toContain("SELECT a");
+    expect(readFileSync(join(dir, "b.sql"), "utf8")).toContain("SELECT b");
+  });
+
+  it("--check exits 0 with no output when every matched file is already formatted", () => {
+    const dir = tempSqlDir({
+      "a.sql": ["SELECT a", "FROM t;", ""].join("\n"),
+      "b.sql": ["SELECT b", "FROM t;", ""].join("\n"),
+    });
+    const { stdout, stderr, status } = runCli(["--check", join(dir, "*.sql")]);
+    expect(status).toBe(0);
+    expect(stdout).toBe("");
+    expect(stderr).toBe("");
+  });
+
+  it("--check exits 1 and lists only the unformatted files on stderr", () => {
+    const dir = tempSqlDir({
+      "a.sql": ["SELECT a", "FROM t;", ""].join("\n"), // already formatted
+      "b.sql": "select   b from t;", // not formatted
+    });
+    const { stderr, status } = runCli(["--check", join(dir, "*.sql")]);
+    expect(status).toBe(1);
+    expect(stderr).toContain(join(dir, "b.sql"));
+    expect(stderr).not.toContain(join(dir, "a.sql"));
+  });
+
+  it("--check does not modify any file", () => {
+    const dir = tempSqlDir({ "a.sql": "select   a from t;" });
+    runCli(["--check", join(dir, "*.sql")]);
+    expect(readFileSync(join(dir, "a.sql"), "utf8")).toBe("select   a from t;");
+  });
+
+  it("a glob matching exactly one file behaves like the single-file case (prints to stdout)", () => {
+    const dir = tempSqlDir({ "only.sql": "select a from t;" });
+    const { stdout, status } = runCli([join(dir, "*.sql")]);
+    expect(status).toBe(0);
+    expect(stdout).toBe(["SELECT a", "FROM t;", ""].join("\n"));
+  });
+
+  it("a glob pattern matching no files is an error", () => {
+    const dir = tempSqlDir({});
+    const { stderr, status } = runCli(["--write", join(dir, "*.sql")]);
+    expect(status).toBe(2);
+    expect(stderr).toContain("No files matched");
   });
 });
 

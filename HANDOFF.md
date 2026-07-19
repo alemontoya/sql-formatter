@@ -112,8 +112,8 @@ core/src/
   format.test.ts        — printer-level tests: exact output, idempotency, comment-count parity, balanced parens, plus a `keywordAlign layout` describe block (synthetic + all 4 river fixtures)
 cli/src/
   index.ts             — shebang entry point (`#!/usr/bin/env node`), just calls run(process.argv.slice(2))
-  cli.ts               — the actual CLI logic: format-mode arg parsing/template resolution/stdin/file I/O, plus the `infer` subcommand (dispatched on `argv[0] === "infer"`, its own arg parser), exports run() for testing
-  cli.test.ts           — integration tests: spawns the CLI via `npx tsx src/index.ts` and asserts on stdout/stderr/exit code, including an `sql-format infer` describe block
+  cli.ts               — the actual CLI logic: format-mode arg parsing/template resolution/stdin/file/glob I/O (`resolveFiles()`, backed by `node:fs`'s built-in `globSync`), plus the `infer` subcommand (dispatched on `argv[0] === "infer"`, its own arg parser), exports run() for testing
+  cli.test.ts           — integration tests: spawns the CLI via `npx tsx src/index.ts` and asserts on stdout/stderr/exit code, including `sql-format infer` and multi-file/glob describe blocks
 ```
 
 ## Environment gotchas
@@ -135,14 +135,19 @@ cli/src/
 
 ## The CLI (`cli/`)
 
-`sql-format [options] [file]` — reads SQL from a file argument or stdin,
-writes formatted SQL to stdout (or back to the file with `--write`).
+`sql-format [options] [file...]` — reads SQL from a file argument or stdin,
+writes formatted SQL to stdout (or back to the file with `--write`). Accepts
+multiple files and/or glob patterns (e.g. `sql-format --write '**/*.sql'`) —
+see the dated section below for multi-file semantics.
 
 ```
 -t, --template <name|path>   "default" or "compact" (bundled), or a path to
                               a style-template JSON file. Defaults to "default".
--w, --write                   Overwrite the input file in place (requires a file arg).
--c, --check                   Exit 1 if input isn't already formatted; no output.
+-w, --write                   Overwrite the input file(s) in place (requires a
+                               file/glob arg).
+-c, --check                   Exit 1 if any input isn't already formatted; no
+                               stdout output (lists unformatted files on
+                               stderr when checking more than one file).
 -h, --help
 ```
 
@@ -241,8 +246,8 @@ added to `KEYWORDS`.
 
 1. ~~Decide on and implement true blank-line preservation...~~ **Fixed.**
    See the dated section below.
-2. Consider whether the CLI needs a way to format multiple files at once
-   (e.g. a glob argument) — v1 only takes a single file or stdin.
+2. ~~Consider whether the CLI needs a way to format multiple files at
+   once...~~ **Fixed.** See the dated section below.
 3. ~~Revisit `GROUP BY`/`ORDER BY`/`HAVING` alignment...~~ **Checked, no bug
    found.** See the dated section below.
 4. An LLM/pattern-based fallback for `inferStyleTemplate()` was explicitly
@@ -803,3 +808,49 @@ column arithmetic), one without `WHERE` at all (confirms `GROUP BY`/
 `HAVING`/`ORDER BY` still borrow the literal `"WHERE"`-width reference and
 widen `FROM` to match it, even when no actual `WHERE` clause exists to
 borrow from).
+
+## CLI multi-file/glob support added (`sql-format --write '**/*.sql'`)
+
+Previously the CLI took exactly one file argument (or stdin) — no way to
+format a whole directory/project in one invocation. `parseArgs()` in
+`cli.ts` now collects every positional arg into a `files: string[]` array
+instead of a single `file: string | null`, and a new `resolveFiles()`
+expands each one that contains glob metacharacters (`*?[]{}`, checked with
+`GLOB_CHARS`) via `node:fs`'s built-in `globSync` (stable, unflagged, as of
+the Node version this repo targets — no new dependency needed), passing
+plain literal paths through unexpanded so a mistyped filename still hits the
+original `readFileSync` "file not found" error rather than a confusing
+"zero glob matches". Results are deduplicated (a `Set`, first-seen order)
+since overlapping patterns/explicit args are a realistic way to end up with
+the same path twice.
+
+`run()` branches on the resolved file count:
+- **0 files** (no positional args at all): unchanged stdin behavior.
+- **Exactly 1 resolved file**: byte-for-byte the original single-file
+  codepath (stdout by default, `--write` writes in place, `--check` sets
+  exit code) — a glob that happens to match one file is indistinguishable
+  from passing that file directly, so single-file scripts/muscle-memory
+  keep working exactly as before.
+- **2+ resolved files**: requires `--write` or `--check` — formatting
+  multiple files to stdout concatenated has no sane consumer, so it's a
+  hard error (`exit 2`) telling the user to pick one of the batch modes,
+  rather than silently doing something surprising. `--write` formats and
+  overwrites every matched file, then prints a one-line summary count to
+  stderr (`"Formatted N files."`) — the single-file `--write` path stays
+  silent, so this doesn't change existing scripts that pipe/redirect single-
+  file `--write` output. `--check` formats every matched file in memory
+  (never writes), exits 1 if any differs from its formatted form, and lists
+  just the unformatted paths on stderr (`"would reformat: <path>"` per
+  line) rather than only a bare exit code — useful as a pre-commit/CI gate
+  across a whole directory where you actually want to know which files
+  failed, not just that "something" did.
+
+8 new tests in `cli.test.ts`'s `sql-format CLI (multi-file / glob)` describe
+block: no-flag error, `--write` via glob, `--write` via multiple explicit
+file args (not just a glob — the two argument shapes share the same
+`resolveFiles()` path), `--check` passing silently, `--check` failing and
+naming only the actually-unformatted file, `--check` never mutating a file,
+a glob matching exactly one file falling through to the single-file/stdout
+path, and a glob matching zero files erroring clearly. All 19 pre-existing
+CLI tests still pass unchanged, confirming the single-file/stdin paths
+weren't disturbed.
