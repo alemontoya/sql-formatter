@@ -11,11 +11,15 @@ the user drives architecture/product decisions and reviews output.
 The **style-template schema**, the **core formatting engine** (tokenizer +
 layout/printer, including a "river style" keyword-alignment layout mode), a
 **rule-based style-inference engine**, a **CLI wrapper** (`sql-format`,
-with an `infer` subcommand), a **web UI** (`web/`), a **VS Code extension**
-(`vscode-extension/`), and **DBeaver integration** (documented in the root
-README — reuses the CLI's `--write` flag via DBeaver's built-in External
-Formatter, no separate plugin) are all built and working. Every planned
-interface is now shipped.
+with `infer` and `advise` subcommands), a **web UI** (`web/`), a **VS Code
+extension** (`vscode-extension/`), **DBeaver integration** (documented in
+the root README — reuses the CLI's `--write` flag via DBeaver's built-in
+External Formatter, no separate plugin), and a **heuristic query advisor**
+(`core/src/advise.ts` — join-order/CTE-extraction/unindexed-column
+suggestions against hand-populated table stats, NOT a cost-based optimizer)
+are all built and working. Every originally-planned interface is shipped;
+the advisor is a scope addition beyond the original plan — see the dated
+section below for why and how it's deliberately limited.
 
 Read `templates/default.json`, `templates/compact.json`, and
 `templates/river.json` for what a style template looks like, and skim
@@ -90,8 +94,9 @@ can depend on `@sql-formatter/core` directly instead of publishing it. Run
 ## Repo layout
 
 ```
-package.json                        — npm workspaces root: ["core", "cli"]
+package.json                        — npm workspaces root: ["core", "cli", "web", "vscode-extension"]
 schema/style-template.schema.json   — JSON Schema for style templates (flat, non-per-clause — deferred per-clause overrides to a later version)
+schema/table-stats.schema.json      — JSON Schema for the advisor's hand-populated per-table/column stats input (rowCount, distinctCount, nullFraction, indexed)
 templates/default.json              — conventional readable style (uppercase keywords, one-per-line lists), layout.mode: "indent"
 templates/compact.json              — minimal wrapping, lowercase keywords, layout.mode: "indent"
 templates/river.json                — keyword-alignment ("river") style, layout.mode: "keywordAlign" — matches the user's actual dominant hand-written style
@@ -110,6 +115,8 @@ core/src/
   style-template.ts     — StyleTemplate TS type (mirrors the JSON schema) + applyCasing()
   infer.ts              — `inferStyleTemplate(sql, options)`: rule-based "format like this example" — reads a SQL example's structure/whitespace and produces a best-effort StyleTemplate with per-field confidence. See the dated section below for the field-by-field approach and what's deliberately deferred.
   infer.test.ts          — synthetic per-field tests, real-fixture layout-mode detection, and a round-trip smoke check (format with river.json, then infer from that output, confirm it recovers river.json's key fields)
+  advise.ts              — `advise(sql, stats, template)`: heuristic, structural query advisor — join-order/duplicate-subquery-CTE/unindexed-column suggestions against hand-populated table stats. Never connects to a database. See the dated section below for the full design and its deliberate safety gates.
+  advise.test.ts          — one describe block per suggestion kind, covering both the positive cases and the safety-gate bail-outs (non-INNER joins, multi-table ON conditions, missing stats, existing WITH clause)
   try.ts               — dev utility: `npx tsx src/try.ts <template.json> <file.sql>` prints formatted output, not part of the build
   __fixtures__/ — real user scripts, used as regression-test fixtures (see the dated bug-fix sections below for what each one caught):
     snowflake-plan-cycles.sql (59 comments, heavy CASE/window-function usage) — river style
@@ -120,8 +127,8 @@ core/src/
   format.test.ts        — printer-level tests: exact output, idempotency, comment-count parity, balanced parens, plus a `keywordAlign layout` describe block (synthetic + all 4 river fixtures)
 cli/src/
   index.ts             — shebang entry point (`#!/usr/bin/env node`), just calls run(process.argv.slice(2))
-  cli.ts               — the actual CLI logic: format-mode arg parsing/template resolution/stdin/file/glob I/O (`resolveFiles()`, backed by `node:fs`'s built-in `globSync`), plus the `infer` subcommand (dispatched on `argv[0] === "infer"`, its own arg parser), exports run() for testing
-  cli.test.ts           — integration tests: spawns the CLI via `npx tsx src/index.ts` and asserts on stdout/stderr/exit code, including `sql-format infer` and multi-file/glob describe blocks
+  cli.ts               — the actual CLI logic: format-mode arg parsing/template resolution/stdin/file/glob I/O (`resolveFiles()`, backed by `node:fs`'s built-in `globSync`), plus the `infer` subcommand (dispatched on `argv[0] === "infer"`) and the `advise` subcommand (dispatched on `argv[0] === "advise"`, with its own `stats-queries` sub-subcommand printing dialect-specific SQL text — never executed by this tool, just printed for the user to run themselves), exports run() for testing
+  cli.test.ts           — integration tests: spawns the CLI via `npx tsx src/index.ts` and asserts on stdout/stderr/exit code, including `sql-format infer`, `sql-format advise`, `sql-format advise stats-queries`, and multi-file/glob describe blocks
 web/                   — Vite + vanilla TypeScript web UI (no framework), scaffolded via `npm create vite -- --template vanilla-ts`. Everything runs client-side in the browser — no server round-trip, consistent with the local-first principle above (SQL text never leaves the page). See the dated section below for the build.
   src/main.ts            — the entire UI: builds the DOM by string template + querySelector wiring (no framework), two tabs ("Format" / "Infer style from example")
   src/templates.ts        — imports `../../templates/*.json` directly (Vite JSON import) so the web UI ships the same bundled templates as the CLI, no duplication
@@ -1538,3 +1545,154 @@ remain the only ways to run it — reachable only from this machine unless
 up separately for remote access without publishing anything. Revisit if
 this changes — nothing about the current build blocks deploying later, the
 `web/dist/` output is already a plain static site.
+
+## Query advisor built (`core/src/advise.ts`) — a scope addition, not on the original interfaces list
+
+The user's own framing, going in: "the coup-de-grace for this tool" — rewrite
+queries to be optimized based on table stats (join reordering, CTE
+extraction), kept isolated from live databases, using stats the user
+populates by hand from queries designed for that purpose.
+
+**Scope was deliberately negotiated down before writing any code.** Initial
+pushback: everything built so far is purely syntactic (formatting never
+changes what a query *does*, which is why it's safe to fully automate);
+query *rewriting* is semantic — join order can change correctness with
+outer joins, and even where it's safe, competing with a real cost-based
+optimizer (Postgres/Snowflake/SQLite already have decades of engineering
+behind live-stats-driven query planning) using a hand-maintained, always-
+stale stats snapshot is a losing bet for "is this actually faster," not
+just a risky one for "is this still correct." Landed on: an **advisor, not
+an autorewriter** — suggestions only, and a rendered "here's what it'd look
+like" preview *only* for the subset of rewrites that are mechanically
+provable as equivalent to the original, never for anything merely
+probably-faster. Given directly to the user as the pitch and accepted
+before implementation started. User's own words on why this scope works for
+them: 25+ years of hands-on SQL experience, knows better than to blindly
+trust a rewrite — the tool's job is to save them look-up/analysis time, not
+to be trusted blindly.
+
+**What ships (v1), and why each one is safe to preview automatically:**
+
+1. **`duplicate-subquery-cte`** — a subquery appearing 2+ times, identical
+   token-for-token, in a statement's (or one level into a CTE's) top-level
+   FROM/JOIN clauses. Provably safe to extract as a CTE by simple
+   substitution — no stats needed at all, purely structural. Deliberately
+   scoped to FROM/JOIN-level derived tables only, not scalar subqueries in
+   SELECT/WHERE (a substitution there would need different, riskier
+   handling not attempted in v1). No preview generated if the statement
+   already has a WITH clause (merging a new CTE into an existing one isn't
+   attempted — text-only suggestion instead, explaining why).
+2. **`join-order`** — reorders a chain of plain `JOIN`/`INNER JOIN`s by
+   ascending row count from the stats file, as a naive "small tables
+   first" heuristic (explicitly labeled in the suggestion text as *not* a
+   real cost estimate — no selectivity, no index awareness, no actual
+   query plan). Safety comes from what it refuses to touch, not from being
+   clever: **the base (first-FROM) table never moves** — every other
+   table's `ON` condition is tied to the specific join clause that wrote
+   it, and moving that table without also relocating its condition would
+   either strand it or require rewriting the condition's meaning, neither
+   of which v1 attempts. Reordering is done via a greedy topological sort
+   (repeatedly pick the smallest not-yet-introduced table whose dependency
+   is already satisfied) — this can only ever produce a dependency-valid
+   order by construction, so there's no separate "is this safe" check
+   needed after the fact. The whole chain is abandoned (no suggestion at
+   all, not even text-only) the moment any of: a non-`INNER`/plain `JOIN`
+   is present (LEFT/RIGHT/FULL correctness depends on position — see
+   below), a join's `ON` condition references anything other than exactly
+   one other table (ambiguous which table it "depends on" for the
+   topological sort), a table isn't a plain name (a derived-table subquery
+   has no stats to look up), or any table's name isn't a key in the
+   supplied stats file. `greedyTopologicalOrder()` returns `null` (not a
+   partial reorder) if the join graph is disconnected from the base under
+   the target order — never emits a suggestion touching only part of a
+   chain.
+3. **`unindexed-column`** — flags a `table.column` used in a JOIN/WHERE/
+   HAVING condition when the stats file has that column's `indexed`
+   explicitly set to `false`. Deliberately does **not** fire when a column
+   simply has no stats entry at all — absence of data isn't evidence of
+   being unindexed, and false positives here would erode trust in every
+   other suggestion. Text-only; there's no query rewrite for "add an
+   index," that's a DB action outside the query itself.
+
+**Preview generation mechanism**: rather than hand-rebuilding formatted
+output, both preview-producing suggestions splice the rewrite into the
+*original source text* using the tokenizer's real offsets (`token.start`/
+`token.end`, the same losslessness property the whole engine is built on),
+then run the spliced text through the actual `format()` pipeline with the
+caller's template. This reuses 100% of the existing printer rather than a
+parallel formatting path, and means the preview always reflects whatever
+template the user is currently using. `try/catch` around each `format()`
+call falls back to text-only advice (`preview: undefined`) if a splice
+somehow produces unparseable SQL, rather than crashing the whole `advise()`
+call over one bad suggestion.
+
+**CTE-recursion depth, and the real bug it caught**: real analytical SQL —
+including this repo's own fixtures — is CTE-heavy, with the actual FROM/
+JOIN structure living inside each CTE's body rather than at the
+statement's top level. `advise()` recurses exactly one level into a WITH
+clause's CTE bodies (via a new `extractCteBodies()`, mirroring
+`printer.ts`'s existing `printCtes()` comma-splitting), analyzing each CTE
+as its own scope — deliberately not recursing further (a CTE nested inside
+another CTE, or any subquery elsewhere) to keep the scope bounded. Manual
+verification against the real fixtures in `core/src/__fixtures__/` caught
+two real bugs this synthetic unit-test suite had missed, both from
+assuming a WITH clause sits at `clauses[0]`:
+`financial-forecast-feed.sql` actually starts with `INSERT INTO
+view_financial_forecast_feed_data` *before* its `WITH` — so `clauses[0]` was
+`"INSERT INTO"`, and both the "recurse into CTE bodies" check and the
+"does this statement already have a WITH clause" gate (in
+`adviseDuplicateSubqueries`) were silently no-ops on this exact real
+query. Fixed by switching both from `clauses[0]?.keyword === "WITH"` to
+`clauses.find/some(c => c.keyword === "WITH")` — position-independent.
+Caught by manually running `sql-format advise` against every fixture with
+a hand-built stats file naming real tables/columns from
+`financial-forecast-feed.sql` and getting suspiciously "No suggestions"
+where a genuine unindexed-column hit was expected, not by the unit test
+suite (whose synthetic examples all happened to put WITH first). Lesson
+for future work here: synthetic unit tests exercise the *logic* correctly
+but can systematically miss *structural* assumptions (like clause
+position) that only real, messier SQL exposes — the manual real-fixture
+sweep is doing real work, not just a formality.
+
+**`schema/table-stats.schema.json`**: separate from the style-template
+schema, hand-populated only — this tool never connects to a database.
+`tables.<name>.rowCount` (required) plus optional per-column
+`distinctCount`/`nullFraction`/`indexed`. Populated via `sql-format advise
+stats-queries --dialect <dialect>`, which **prints** SQL text for the user
+to run themselves and paste the result back in — never executes anything
+against a database itself, consistent with the "prohibited: executing
+files/connecting to systems without the user driving it" boundary. Postgres
+gets a single catalog-driven query (`pg_stats`/`pg_class`/`pg_index`)
+producing the whole `tables` JSON object directly in one shot. Snowflake
+and SQLite don't expose an equivalently cheap pre-computed per-column stats
+catalog to ordinary users, so those (and the dialect-agnostic `generic`
+fallback) get a simpler per-table `COUNT`/`COUNT(DISTINCT ...)` template
+the user runs once per table and merges by hand — deliberately not guessing
+at Snowflake/SQLite catalog syntax without being able to verify it actually
+works, honest-but-less-polished over polished-but-possibly-wrong.
+
+**CLI**: `sql-format advise <file> [--stats <path>] [-t <template>]` prints
+a numbered list of suggestions (kind, statement number, message, and an
+indented preview block when one exists) to stdout; runs structural-only
+checks with a note to that effect when `--stats` is omitted.
+`sql-format advise stats-queries --dialect <dialect>` is the separate
+print-only helper above.
+
+**Testing**: 17 new `core` tests (`advise.test.ts`) covering all three
+suggestion kinds' positive cases and every safety-gate bail-out described
+above, plus 9 new `cli` tests (`sql-format advise` and `sql-format advise
+stats-queries` describe blocks) — 231 total across `core`+`cli`+
+`vscode-extension`, all passing. Every preview in the test suite is
+asserted idempotent (`format(preview, template) === preview`) as a cheap
+proxy for "this is plausible, real, well-formed SQL," not just a non-empty
+string.
+
+**Deliberately out of scope for v1** (documented, not forgotten): scalar/
+WHERE-clause subqueries for CTE extraction (only FROM/JOIN-level derived
+tables); old-style comma joins (`FROM a, b WHERE a.id = b.a_id`) anywhere
+in the pipeline; moving/promoting the base table itself in a join-order
+suggestion; recursing more than one level into nested CTEs or into
+subqueries outside of CTEs; any actual cost model (selectivity, index
+usage in the plan, join algorithm choice) — the join-order heuristic is
+explicitly "small tables first by row count," nothing more, and says so in
+its own suggestion text every time it fires.

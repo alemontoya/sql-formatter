@@ -243,3 +243,107 @@ describe("sql-format infer", () => {
     expect(stdout).toContain("SELECT id, name");
   });
 });
+
+function tempJsonFile(data: unknown): string {
+  const dir = mkdtempSync(join(tmpdir(), "sql-format-advise-stats-"));
+  const path = join(dir, "stats.json");
+  writeFileSync(path, JSON.stringify(data));
+  return path;
+}
+
+describe("sql-format advise", () => {
+  it("prints structural suggestions with no --stats given", () => {
+    const file = tempSqlFile(
+      [
+        "SELECT a.n, b.n",
+        "FROM (SELECT customer_id, COUNT(*) AS n FROM orders WHERE status = 'paid' GROUP BY customer_id) a",
+        "JOIN (SELECT customer_id, COUNT(*) AS n FROM orders WHERE status = 'paid' GROUP BY customer_id) b",
+        "  ON a.customer_id = b.customer_id;",
+      ].join("\n"),
+    );
+    const { stdout, status } = runCli(["advise", file]);
+    expect(status).toBe(0);
+    expect(stdout).toContain("duplicate-subquery-cte");
+    expect(stdout).toContain("Preview:");
+  });
+
+  it("says so when there's nothing to suggest and no --stats was given", () => {
+    const file = tempSqlFile("select id from t where active = true;");
+    const { stdout, status } = runCli(["advise", file]);
+    expect(status).toBe(0);
+    expect(stdout).toContain("structural checks only");
+  });
+
+  it("runs join-order and unindexed-column checks when --stats is given", () => {
+    const file = tempSqlFile(
+      [
+        "SELECT o.id, oi.sku, c.name",
+        "FROM orders o",
+        "JOIN order_items oi ON o.id = oi.order_id",
+        "JOIN customers c ON o.customer_id = c.id",
+        "WHERE c.email = 'x@example.com';",
+      ].join("\n"),
+    );
+    const statsFile = tempJsonFile({
+      id: "test",
+      dialect: "generic",
+      collectedAt: "2026-01-01T00:00:00Z",
+      tables: {
+        orders: { rowCount: 4_000_000 },
+        customers: { rowCount: 500, columns: { email: { indexed: false } } },
+        order_items: { rowCount: 10_000_000 },
+      },
+    });
+    const { stdout, status } = runCli(["advise", file, "--stats", statsFile]);
+    expect(status).toBe(0);
+    expect(stdout).toContain("join-order");
+    expect(stdout).toContain("unindexed-column");
+    expect(stdout).toContain("customers.email");
+  });
+
+  it("errors on a missing SQL file", () => {
+    const { stderr, status } = runCli(["advise", "/no/such/file.sql"]);
+    expect(status).toBe(2);
+    expect(stderr).toContain("File not found");
+  });
+
+  it("errors on a missing stats file", () => {
+    const file = tempSqlFile("select 1;");
+    const { stderr, status } = runCli(["advise", file, "--stats", "/no/such/stats.json"]);
+    expect(status).toBe(2);
+    expect(stderr).toContain("Stats file not found");
+  });
+
+  it("requires a file argument", () => {
+    const { stderr, status } = runCli(["advise"]);
+    expect(status).toBe(2);
+    expect(stderr).toContain("requires a file");
+  });
+});
+
+describe("sql-format advise stats-queries", () => {
+  it(
+    "prints dialect-specific SQL for each supported dialect",
+    () => {
+      for (const dialect of ["postgres", "snowflake", "sqlite", "generic"]) {
+        const { stdout, status } = runCli(["advise", "stats-queries", "--dialect", dialect]);
+        expect(status).toBe(0);
+        expect(stdout.length).toBeGreaterThan(0);
+      }
+    },
+    // Four sequential `npx tsx` cold-start spawns comfortably exceed the 5s default.
+    20_000,
+  );
+
+  it("requires --dialect", () => {
+    const { stderr, status } = runCli(["advise", "stats-queries"]);
+    expect(status).toBe(2);
+    expect(stderr).toContain("requires --dialect");
+  });
+
+  it("rejects an unknown dialect", () => {
+    const { stderr, status } = runCli(["advise", "stats-queries", "--dialect", "mysql"]);
+    expect(status).toBe(2);
+    expect(stderr).toContain("requires --dialect");
+  });
+});

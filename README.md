@@ -9,7 +9,8 @@ to drop things), and supports both conventional indented layout and
 This is a personal tool. Interfaces shipped today: a CLI (below), a web UI
 ([web/README.md](web/README.md)), a [VS Code extension](vscode-extension/README.md),
 and [DBeaver integration](#dbeaver-integration) (below — reuses the CLI directly,
-no separate plugin).
+no separate plugin). The CLI also has a heuristic [query advisor](#query-advisor-advise--heuristic-suggestions-not-a-query-optimizer)
+(`sql-format advise`) — suggestions only, never an automatic rewrite.
 
 ## Install
 
@@ -107,11 +108,50 @@ by hand before relying on the generated template. `--dialect` (`generic`
 (default), `postgres`, `snowflake`, `sqlite`) and `--description` are also
 accepted; see `sql-format --help` for the full option list.
 
+### Query advisor (`advise`) — heuristic suggestions, not a query optimizer
+
+`sql-format advise` looks at a query's structure (join order, duplicate
+subqueries, which columns get filtered/joined on) and prints suggestions —
+**it never rewrites your file, never connects to a database, and is not a
+cost-based optimizer.** It's a heuristic that flags things worth a second
+look, using table/column statistics *you* supply by hand:
+
+```
+sql-format advise query.sql --stats my-stats.json
+```
+
+Without `--stats`, only structural checks that need no stats run (right
+now: spotting an identical subquery repeated in a FROM/JOIN chain, which is
+suggested as a CTE extraction). With `--stats`, it also flags join chains
+that could plausibly be reordered smallest-table-first, and columns your
+stats mark as not indexed that show up in a JOIN/WHERE condition.
+
+A suggestion sometimes comes with a rendered preview of the rewrite — but
+**only** when it's mechanically provable as equivalent to the original
+(an exact-duplicate subquery extracted into a CTE, or a chain of plain
+`INNER JOIN`s reordered without ever moving the base table or touching a
+join whose `ON` condition is ambiguous). Anything riskier than that stays
+text-only advice for you to judge — see [HANDOFF.md](HANDOFF.md)'s "Query
+advisor built" section for the exact safety rules behind each suggestion
+kind.
+
+Stats live in a JSON file matching `schema/table-stats.schema.json` —
+hand-populated, never collected automatically. `sql-format advise
+stats-queries --dialect <dialect>` **prints** SQL for you to run yourself
+against your database and paste the result back in; this tool never runs
+it or connects to anything on your behalf.
+
+```
+sql-format advise stats-queries --dialect postgres
+```
+
 ## Full option reference
 
 ```
 sql-format [options] [file...]
 sql-format infer <example-file> --id <id> --name <name> [options]
+sql-format advise <file> [--stats <stats.json>] [options]
+sql-format advise stats-queries --dialect <dialect>
 
 -t, --template <name|path>   "default" or "compact" (bundled), or a path
                               to a style-template JSON file.

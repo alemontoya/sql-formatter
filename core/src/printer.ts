@@ -78,7 +78,7 @@ export function lastLeafOfStatement(nodes: Node[]): Leaf | null {
   return last ? lastLeaf(last) : null;
 }
 
-function isKeywordLeaf(node: Node | undefined, word: string): boolean {
+export function isKeywordLeaf(node: Node | undefined, word: string): boolean {
   return (
     !!node &&
     node.kind === "leaf" &&
@@ -469,7 +469,7 @@ function printList(items: Node[][], level: number, ctx: Ctx, itemPrinter: (item:
  * and `printSeq` — the latter needs to know this *before* calling
  * `printGroup`, to decide whether to break the line ahead of `(` for
  * `parentheses.subqueryOpenParenSameLine: false`. */
-function isSubqueryGroup(group: GroupNode): boolean {
+export function isSubqueryGroup(group: GroupNode): boolean {
   const firstInner = group.content[0];
   return !!firstInner && (isKeywordLeaf(firstInner, "SELECT") || isKeywordLeaf(firstInner, "WITH"));
 }
@@ -594,7 +594,7 @@ function printGroupItems(items: Node[][], level: number, ctx: Ctx): string {
 }
 
 /** Splits a flat node sequence into segments at whatever points `isSplitOp` flags. */
-function splitChain(
+export function splitChain(
   nodes: Node[],
   isSplitOp: (nodes: Node[], idx: number) => string | null
 ): { op: string | null; nodes: Node[] }[] {
@@ -671,7 +671,7 @@ function printChain(
   return b.out;
 }
 
-function isAndOr(nodes: Node[], idx: number): string | null {
+export function isAndOr(nodes: Node[], idx: number): string | null {
   const node = nodes[idx];
   if (isKeywordLeaf(node, "AND")) return "AND";
   if (isKeywordLeaf(node, "OR")) return "OR";
