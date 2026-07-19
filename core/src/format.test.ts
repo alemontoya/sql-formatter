@@ -163,6 +163,56 @@ describe("format", () => {
   });
 });
 
+describe("format (blank lines between statements)", () => {
+  function withBetweenStatements(mode: "preserve" | "collapseToOne" | "none"): StyleTemplate {
+    return {
+      ...defaultTemplate,
+      style: { ...defaultTemplate.style, blankLines: { ...defaultTemplate.style.blankLines, betweenStatements: mode } },
+    };
+  }
+
+  it('"none" strips blank lines between statements regardless of source spacing', () => {
+    const sql = "select a from t;\n\n\nselect b from t;";
+    const out = format(sql, withBetweenStatements("none"));
+    expect(out).toBe(["SELECT a", "FROM t;", "SELECT b", "FROM t;", ""].join("\n"));
+  });
+
+  it('"collapseToOne" always inserts exactly one blank line regardless of source spacing', () => {
+    const noGap = format("select a from t;\nselect b from t;", withBetweenStatements("collapseToOne"));
+    const bigGap = format("select a from t;\n\n\n\nselect b from t;", withBetweenStatements("collapseToOne"));
+    expect(noGap).toBe(bigGap);
+    expect(noGap).toBe(["SELECT a", "FROM t;", "", "SELECT b", "FROM t;", ""].join("\n"));
+  });
+
+  it('"preserve" keeps the original blank-line count (0, 1, or several) between each pair of statements', () => {
+    const sql = ["select a from t;", "select b from t;", "", "select c from t;", "", "", "select d from t;"].join("\n");
+    const out = format(sql, withBetweenStatements("preserve"));
+    expect(out).toBe(
+      [
+        "SELECT a",
+        "FROM t;",
+        "SELECT b",
+        "FROM t;",
+        "",
+        "SELECT c",
+        "FROM t;",
+        "",
+        "",
+        "SELECT d",
+        "FROM t;",
+        "",
+      ].join("\n")
+    );
+  });
+
+  it('"preserve" is idempotent (reformatting the output keeps the same blank-line counts)', () => {
+    const sql = ["select a from t;", "", "select b from t;", "", "", "select c from t;"].join("\n");
+    const once = format(sql, withBetweenStatements("preserve"));
+    const twice = format(once, withBetweenStatements("preserve"));
+    expect(twice).toBe(once);
+  });
+});
+
 describe("format (CASE)", () => {
   it("preserves a comment on its own line before a WHEN branch", () => {
     const sql = ["select case", "  -- studio", "  when x = 1 then 'a'", "  else 'b'", "end from t;"].join("\n");

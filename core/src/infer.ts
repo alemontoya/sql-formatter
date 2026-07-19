@@ -4,6 +4,7 @@ import { splitStatements, buildTree, type Node } from "./tree.js";
 import { splitClauses, type Clause } from "./clauses.js";
 import { classifyLeaf, splitTopLevelCommas, canonicalFamilyWord } from "./printer.js";
 import { isKeyword } from "./keywords.js";
+import { computeLines, lineIndexAt, type SourceLines } from "./lines.js";
 import type { StyleTemplate, CasingRule } from "./style-template.js";
 import type { Token, Dialect } from "./types.js";
 
@@ -53,42 +54,9 @@ function tally<T>(values: T[]): Map<T, number> {
 }
 
 // ---------------------------------------------------------------------------
-// Source-position helpers. The tokenizer keeps `start`/`end` as offsets into
-// the original source string, so line/column info is recoverable directly
-// from `sql` without any extra parsing infrastructure.
-
-interface SourceLines {
-  raw: string;
-  starts: number[]; // offset each line begins at, sorted
-  text: string[]; // each line's text (no trailing \n)
-}
-
-function computeLines(sql: string): SourceLines {
-  const text = sql.split("\n");
-  const starts: number[] = [];
-  let pos = 0;
-  for (const line of text) {
-    starts.push(pos);
-    pos += line.length + 1;
-  }
-  return { raw: sql, starts, text };
-}
-
-function lineIndexAt(lines: SourceLines, offset: number): number {
-  let lo = 0;
-  let hi = lines.starts.length - 1;
-  let ans = 0;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    if (lines.starts[mid] <= offset) {
-      ans = mid;
-      lo = mid + 1;
-    } else {
-      hi = mid - 1;
-    }
-  }
-  return ans;
-}
+// Source-position helpers. `computeLines`/`lineIndexAt`/`SourceLines` live in
+// `lines.ts` (shared with `format.ts`, which uses them to preserve the
+// original blank-line count between statements).
 
 function columnAt(lines: SourceLines, offset: number): number {
   return offset - lines.starts[lineIndexAt(lines, offset)];

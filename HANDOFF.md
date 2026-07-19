@@ -98,6 +98,7 @@ core/src/
   clauses.ts            — splits a statement's node sequence into clauses (SELECT/FROM/WHERE/JOIN/WITH/...)
   printer.ts            — the actual layout engine: casing, indentation, list-wrapping, boolean chains, CASE blocks, JOIN/CTE printing, and the keywordAlign ("river style") layout mode. Exports a few helpers (`classifyLeaf`, `splitTopLevelCommas`, `firstWord`, `canonicalFamilyWord`) purely so `infer.ts` can reuse them rather than re-implement the same classification logic.
   format.ts            — top-level `format(sql, template): string` entry point
+  lines.ts             — `computeLines`/`lineIndexAt`/`SourceLines`: offset → line-number lookup over the original source string, shared by `format.ts` (blank-line preservation between statements) and `infer.ts` (reading source layout to infer style)
   style-template.ts     — StyleTemplate TS type (mirrors the JSON schema) + applyCasing()
   infer.ts              — `inferStyleTemplate(sql, options)`: rule-based "format like this example" — reads a SQL example's structure/whitespace and produces a best-effort StyleTemplate with per-field confidence. See the dated section below for the field-by-field approach and what's deliberately deferred.
   infer.test.ts          — synthetic per-field tests, real-fixture layout-mode detection, and a round-trip smoke check (format with river.json, then infer from that output, confirm it recovers river.json's key fields)
@@ -192,11 +193,6 @@ not template-specific hacks:
 
 ## Known v1 gaps (deliberate scope cuts, not bugs — don't "fix" without asking)
 
-- `blankLines.betweenStatements: "preserve"` falls back to `collapseToOne` —
-  true preservation of original blank-line counts between statements isn't
-  wired up (would need blank-line info retained through the trivia pass,
-  which currently discards whitespace token content once newline-adjacency
-  is determined).
 - `parentheses.subqueryOpenParenSameLine: false` isn't implemented (always
   behaves as `true`, which is what both current templates use anyway, so
   there's no visible gap yet — but it'll surface once someone sets it false).
@@ -243,8 +239,8 @@ added to `KEYWORDS`.
 
 ## Suggested next steps
 
-1. Decide on and implement true blank-line preservation, if it turns out to
-   matter in practice.
+1. ~~Decide on and implement true blank-line preservation...~~ **Fixed.**
+   See the dated section below.
 2. Consider whether the CLI needs a way to format multiple files at once
    (e.g. a glob argument) — v1 only takes a single file or stdin.
 3. Revisit `GROUP BY`/`ORDER BY`/`HAVING` alignment in `keywordAlign` mode
@@ -740,3 +736,38 @@ effect.
 New `core/src/infer.ts` test file (`infer.test.ts`) and the CLI `infer`
 subcommand (`cli.ts`, dispatched on `argv[0] === "infer"`) — see the CLI
 section above.
+
+## `blankLines.betweenStatements: "preserve"` implemented (was a known gap)
+
+Previously fell back to `collapseToOne` unconditionally — `format.ts` only
+ever joined printed statements with a fixed `"\n\n"` or `"\n"` separator, with
+no path to reproduce whatever gap the original source actually had. Turned
+out not to need new trivia-retention infrastructure: `Token` already carries
+`start`/`end` offsets into the original `sql` string,
+and `infer.ts` already had exactly this measurement (`computeLines()` +
+`lineIndexAt()`, used by `inferBlankLinesBetweenStatements()` to *detect* the
+prevailing convention) — it just wasn't being reused to *apply* one.
+
+Extracted `computeLines`/`lineIndexAt`/`SourceLines` out of `infer.ts` into a
+new shared `core/src/lines.ts`, imported by both `infer.ts` and `format.ts`.
+`format.ts` now computes each statement-boundary's actual blank-line count
+(`originalBlankLines()`: line of the previous statement's last token's end
+vs. line of the next statement's first token's start, minus one, floored at
+0) and joins statements with exactly that many blank lines when
+`betweenStatements === "preserve"`, instead of a fixed separator.
+`"collapseToOne"`/`"none"` are unaffected (still fixed 1/0 blank lines
+regardless of source spacing).
+
+The semicolon token itself isn't tracked as a leaf (`splitStatements()` in
+`tree.ts` discards it, a known pre-existing gap for comment-on-bare-`;`
+cases — see above), but it doesn't need to be for this: it's always on the
+same source line as the previous statement's last real token in practice, so
+measuring from that token's end still gets the right line-gap count.
+
+4 new tests in `format.test.ts`'s `describe("format (blank lines between
+statements)")`: `"none"` strips regardless of source spacing, `"collapseToOne"`
+always inserts exactly one blank line, `"preserve"` reproduces 0/1/2 blank
+lines exactly across three statement boundaries, and idempotency (reformatting
+`"preserve"` output produces identical output). Verified manually against the
+CLI too, including a 3-statement file with 0/1/3 blank-line gaps and a
+round-trip idempotency check.
