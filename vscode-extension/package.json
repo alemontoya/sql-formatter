@@ -5,6 +5,11 @@
   "version": "0.1.0",
   "private": true,
   "publisher": "local",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alemontoya/sql-formatter.git",
+    "directory": "vscode-extension"
+  },
   "engines": {
     "vscode": "^1.90.0"
   },
