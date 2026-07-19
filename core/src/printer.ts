@@ -418,6 +418,67 @@ function isSubqueryGroup(group: GroupNode): boolean {
   return !!firstInner && (isKeywordLeaf(firstInner, "SELECT") || isKeywordLeaf(firstInner, "WITH"));
 }
 
+/** A window function's `OVER (...)` spec opens with `PARTITION BY` and/or
+ * `ORDER BY` — distinguishable from a subquery (`SELECT`/`WITH`) or a plain
+ * comma list (function args, `IN (...)`) by starting with one of those two
+ * keywords directly. */
+function isWindowSpecGroup(group: GroupNode): boolean {
+  const firstInner = group.content[0];
+  return !!firstInner && (isKeywordLeaf(firstInner, "PARTITION") || isKeywordLeaf(firstInner, "ORDER"));
+}
+
+/** Wraps a window spec's comma-separated list (PARTITION BY's or ORDER BY's
+ * columns) one-per-line only once the flat rendering overflows lineWidth —
+ * same "wrap only when it doesn't fit" philosophy as `printGroupItems`,
+ * deliberately ignoring `lists.onePerLine`/`wrapThresholdItems` since this
+ * is a clause *inside* a generic paren group, not a clause-level list. */
+function printWindowClauseList(items: Node[][], level: number, ctx: Ctx): string {
+  const rendered = items.map((item) => printSeq(item, level, ctx));
+  const inline = rendered.join(", ");
+  const overflows =
+    rendered.some((r) => r.includes("\n")) || indentStr(ctx, level).length + inline.length > ctx.style.lineWidth;
+  if (!overflows) return inline;
+
+  const b = new Builder();
+  rendered.forEach((text, i) => {
+    if (i > 0) {
+      b.raw(",");
+      b.newline(ctx, level);
+    }
+    b.raw(text);
+  });
+  return b.out;
+}
+
+/** Prints an `OVER (...)` window spec, wrapping `PARTITION BY`/`ORDER BY`
+ * (plus any trailing frame clause, e.g. `ROWS BETWEEN ...` — folded into
+ * `ORDER BY`'s segment since it has no clause-starter of its own) onto
+ * their own lines once the flat rendering overflows `lineWidth`. Applies
+ * the same in both layout modes — no shared alignment column is needed
+ * inside a window spec, unlike a subquery scope. */
+function printWindowSpec(content: Node[], level: number, ctx: Ctx): string {
+  const flat = printSeq(content, level, ctx);
+  const fits = !flat.includes("\n") && indentStr(ctx, level).length + flat.length + 2 <= ctx.style.lineWidth;
+  if (fits) return "(" + flat + ")";
+
+  const clauses = splitClauses(content);
+  const b = new Builder();
+  b.raw("(");
+  clauses.forEach((clause) => {
+    b.newline(ctx, level + 1);
+    if (clause.keyword === "") {
+      b.raw(printSeq(clause.body, level + 1, ctx));
+      return;
+    }
+    const keywordText = printClauseKeyword(clause, ctx);
+    const items = splitTopLevelCommas(clause.body);
+    b.raw(keywordText + " " + printWindowClauseList(items, level + 1, ctx));
+  });
+  b.newline(ctx, level);
+  b.raw(")");
+  return b.out;
+}
+
 function printGroup(group: GroupNode, level: number, ctx: Ctx): string {
   const isSubquery = isSubqueryGroup(group);
 
@@ -432,6 +493,10 @@ function printGroup(group: GroupNode, level: number, ctx: Ctx): string {
     }
     const inner = printStatementBody(group.content, level + 1, ctx);
     return "(\n" + indentStr(ctx, level + 1) + inner + "\n" + indentStr(ctx, level) + ")";
+  }
+
+  if (isWindowSpecGroup(group)) {
+    return printWindowSpec(group.content, level, ctx);
   }
 
   const items = splitTopLevelCommas(group.content);

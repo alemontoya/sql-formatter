@@ -229,8 +229,21 @@ not template-specific hacks:
   Still ignored entirely in `keywordAlign` mode (unchanged, and intentional:
   the alignment column is structurally computed from `(` being glued to the
   subquery's first keyword — see the river-style section below).
-- No wrapping inside window-function `OVER(...)` clauses — they print as one
-  long inline expression regardless of `lineWidth`.
+- ~~No wrapping inside window-function `OVER(...)` clauses...~~ **Implemented**
+  — see the dated section below. Narrower residual gap discovered while
+  implementing it (not fixed, and shared with `printGroupItems`'s pre-existing
+  function-call-args wrapping too — not unique to this fix): a group's
+  wrap-or-not decision only measures its *own* content against `lineWidth`,
+  not the full line including whatever text precedes/follows it (e.g. the
+  function name before `OVER (` or an `AS alias` after `)`). A window spec
+  short enough on its own can still leave the *overall* line over `lineWidth`
+  if the surrounding prefix/suffix pushes it over. Confirmed still present in
+  `snowflake-plan-cycles.sql` (columns with a long alias after a
+  moderate-length `OVER (...)`). Properly fixing this needs the printer to
+  track "how much of the line is already consumed" and thread that into every
+  group's wrap decision — a real architectural change (affects
+  `printGroupItems` too), out of scope for this fix; flagging rather than
+  scope-creeping into it.
 - `alignment.aliases` / `alignment.assignments` aren't implemented. Also not
   attempted by `inferStyleTemplate()` — always defaulted, 0 confidence.
 - A comment attached directly to a bare `;` (rare — a comment between the
@@ -929,3 +942,50 @@ setting, and idempotency. All 126 pre-existing `core` tests still pass
 unchanged (both bundled templates set this `true`, so default behavior for
 anyone not touching the field is untouched). Verified manually against the
 CLI too, including a CTE case and an idempotency round-trip.
+
+## Window-function `OVER (...)` wrapping implemented
+
+Next item on the "Known v1 gaps" list. Previously an `OVER (...)` spec's
+content — `PARTITION BY`/`ORDER BY` and their column lists — was printed as
+a plain paren-group comma list (whatever generic `printGroupItems()` branch
+a group falls into), and since a window spec commonly has only *one*
+top-level comma overall (between the last `PARTITION BY` column and the
+`ORDER BY` keyword sequence, which isn't actually a comma boundary at all —
+there's no comma there), `splitTopLevelCommas()` frequently found zero or
+one comma and never wrapped, regardless of `lineWidth`.
+
+Added `["PARTITION", "BY"]` to `CLAUSE_STARTERS` in `clauses.ts` (`ORDER BY`
+was already there) — safe to add unconditionally since `PARTITION BY` is
+never valid SQL outside a window spec's parens, and `splitClauses()` only
+ever runs against one paren-nesting scope's node list, never confusing an
+inner window spec's clauses with an outer statement's. New `printer.ts`
+pieces: `isWindowSpecGroup()` (content starts with `PARTITION`/`ORDER`,
+mirroring `isSubqueryGroup()`'s shape), `printWindowSpec()` (tries the flat
+one-line rendering first; if it overflows `lineWidth`, reuses
+`splitClauses()` to split into `PARTITION BY`/`ORDER BY` segments and prints
+each on its own line), and `printWindowClauseList()` (wraps a segment's own
+comma list one-per-line only if *it* overflows — same "ignore
+`lists.onePerLine`, wrap only when needed" philosophy `printGroupItems()`
+already uses for generic groups, not the clause-level list rules). Wired
+into `printGroup()` alongside the existing subquery/plain-list branches.
+Works identically in both layout modes — no shared alignment column is
+needed inside a window spec, unlike a subquery scope, so no
+`keywordAlign`-specific branch was needed here (confirmed with a test).
+
+A frame clause (`ROWS BETWEEN ...`) has no clause-starter of its own, so it
+folds into `ORDER BY`'s segment as trailing tokens rather than getting its
+own line — acceptable for now (no real fixture's frame clause is long
+enough to need further wrapping; see the `snowflake-plan-cycles.sql` example
+in the dated section above).
+
+6 new tests in `format.test.ts`'s `describe("format (window function OVER
+(...) wrapping)")`: short spec stays inline, long spec wraps
+`PARTITION BY`/`ORDER BY` (exact full-output match), a frame clause folds
+into `ORDER BY`'s line, a `PARTITION BY` column list itself wraps
+one-per-line when it alone overflows, `keywordAlign` mode wraps the same
+way, and idempotency. All 132 `core` tests total pass (126 pre-existing +
+6 new). Verified manually against real `OVER (...)` calls from
+`snowflake-plan-cycles.sql` and confirmed the fixture still round-trips
+idempotently after reformatting with the new wrapping active — see the
+"Known v1 gaps" entry above for the narrower residual line-length gap this
+surfaced (not fixed here, flagged as a separate architectural limitation).

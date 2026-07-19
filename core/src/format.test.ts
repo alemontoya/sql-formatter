@@ -293,6 +293,65 @@ describe("format (parenthesized groups)", () => {
   });
 });
 
+describe("format (window function OVER (...) wrapping)", () => {
+  it("keeps a short window spec inline regardless of lineWidth", () => {
+    const sql = "select row_number() over (partition by a order by b) as rn from t;";
+    const out = format(sql, defaultTemplate);
+    expect(out).toContain("OVER (PARTITION BY a ORDER BY b)");
+  });
+
+  it("wraps PARTITION BY and ORDER BY onto their own lines when the flat spec overflows lineWidth", () => {
+    const sql =
+      "select row_number() over (partition by some_long_column_name, another_long_column_name order by yet_another_long_column_name desc) as rn from t;";
+    const out = format(sql, defaultTemplate);
+    expect(out).toBe(
+      [
+        "SELECT",
+        "  ROW_NUMBER() OVER (",
+        "    PARTITION BY some_long_column_name, another_long_column_name",
+        "    ORDER BY yet_another_long_column_name DESC",
+        "  ) AS rn",
+        "FROM t;",
+        "",
+      ].join("\n")
+    );
+  });
+
+  it("folds a trailing frame clause (ROWS BETWEEN ...) into ORDER BY's line", () => {
+    const sql =
+      "select last_value(status) over (partition by customer_id, plan_family, mod_plan_code order by transaction_date rows between unbounded preceding and unbounded following) as last_status from t;";
+    const out = format(sql, defaultTemplate);
+    expect(out).toContain("ORDER BY transaction_date ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING");
+  });
+
+  it("wraps a PARTITION BY column list one-per-line if it alone overflows lineWidth", () => {
+    const cols = Array.from({ length: 8 }, (_, i) => `some_reasonably_long_partition_column_${i}`);
+    const sql = `select row_number() over (partition by ${cols.join(", ")} order by x) as rn from t;`;
+    const out = format(sql, defaultTemplate);
+    for (const line of out.split("\n")) {
+      expect(line.length).toBeLessThanOrEqual(defaultTemplate.style.lineWidth);
+    }
+    expect(out).toContain("some_reasonably_long_partition_column_6,\n    some_reasonably_long_partition_column_7\n");
+  });
+
+  it("wraps in keywordAlign mode the same way as indent mode (no shared alignment column needed here)", () => {
+    const sql =
+      "select row_number() over (partition by some_long_column_name, another_long_column_name order by yet_another_long_column_name desc) as rn from t;";
+    const out = format(sql, riverTemplate);
+    expect(out).toContain("OVER (\n");
+    expect(out).toContain("PARTITION BY some_long_column_name, another_long_column_name\n");
+    expect(out).toContain("ORDER BY yet_another_long_column_name DESC\n");
+  });
+
+  it("is idempotent when a window spec wraps", () => {
+    const sql =
+      "select row_number() over (partition by some_long_column_name, another_long_column_name order by yet_another_long_column_name desc) as rn from t;";
+    const once = format(sql, defaultTemplate);
+    const twice = format(once, defaultTemplate);
+    expect(twice).toBe(once);
+  });
+});
+
 describe("format (parentheses.subqueryOpenParenSameLine)", () => {
   function withSubqueryParen(sameLine: boolean): StyleTemplate {
     return {

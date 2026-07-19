@@ -15,6 +15,7 @@ const CLAUSE_STARTERS: string[][] = [
   ["GROUP", "BY"],
   ["HAVING"],
   ["ORDER", "BY"],
+  ["PARTITION", "BY"],
   ["LIMIT"],
   ["OFFSET"],
   ["LEFT", "OUTER", "JOIN"],
