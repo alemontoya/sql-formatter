@@ -54,6 +54,13 @@ describe("format", () => {
     expect(out).not.toContain("T(a)");
   });
 
+  it("does not uppercase the table name in CREATE TABLE t (columns) as if it were a function call", () => {
+    const sql = "create table t (a int, b text);";
+    const out = format(sql, defaultTemplate);
+    expect(out).toContain("CREATE TABLE t (a int, b text);");
+    expect(out).not.toContain("T(a int, b text)");
+  });
+
   it("keeps short lists inline for the compact template", () => {
     const sql = "select id, name, email from users;";
     const out = format(sql, compactTemplate);

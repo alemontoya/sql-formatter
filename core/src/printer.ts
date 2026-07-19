@@ -156,8 +156,25 @@ export function classifyLeaf(
     return "type";
   }
   const next = nodes[idx + 1];
-  if (next && next.kind === "group" && !(idx === 0 && bodyStartsAtTableRef)) return "function";
+  if (next && next.kind === "group" && !isTableRefPosition(nodes, idx, bodyStartsAtTableRef)) return "function";
   return "identifier";
+}
+
+/** True when the identifier at `idx` is a table name immediately followed by
+ * a parenthesized column list — e.g. `INSERT INTO t (a)` or
+ * `CREATE TABLE t (a int)` — which looks identical in the token tree to a
+ * function call but must keep `casing.identifiers`, not `casing.functions`.
+ * Handles two shapes: the INTO/TABLE keyword still sitting in `nodes` right
+ * before `idx` (e.g. bare "CREATE TABLE ..." prefixes, which aren't a
+ * recognized clause and keep their keywords inline), and the INTO/TABLE
+ * keyword having already been split off by `splitClauses` so `idx === 0` is
+ * the clause body's first node (signaled by `bodyStartsAtTableRef`). */
+function isTableRefPosition(nodes: Node[], idx: number, bodyStartsAtTableRef: boolean): boolean {
+  if (idx === 0 && bodyStartsAtTableRef) return true;
+  const prev = nodes[idx - 1];
+  if (!prev || prev.kind !== "leaf" || prev.leaf.token.type !== "keyword") return false;
+  const keyword = prev.leaf.token.value.toUpperCase();
+  return keyword === "INTO" || keyword === "TABLE";
 }
 
 const BINARY_TRIGGER_TYPES = new Set(["identifier", "quotedIdentifier", "number", "string"]);
