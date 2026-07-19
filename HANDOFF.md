@@ -10,9 +10,9 @@ the user drives architecture/product decisions and reviews output.
 
 The **style-template schema**, the **core formatting engine** (tokenizer +
 layout/printer, including a "river style" keyword-alignment layout mode), a
-**rule-based style-inference engine**, and a **CLI wrapper** (`sql-format`,
-now with an `infer` subcommand) are built and working. No web UI, VS Code
-extension, or DBeaver integration yet.
+**rule-based style-inference engine**, a **CLI wrapper** (`sql-format`,
+with an `infer` subcommand), and a **web UI** (`web/`) are built and
+working. No VS Code extension or DBeaver integration yet.
 
 Read `templates/default.json`, `templates/compact.json`, and
 `templates/river.json` for what a style template looks like, and skim
@@ -21,9 +21,9 @@ the whole pipeline together and is the fastest way to understand the
 architecture.
 
 The repo is an **npm workspace** (`package.json` at the root lists
-`["core", "cli"]`) so `cli` can depend on `@sql-formatter/core` directly
-instead of publishing it. Run `npm install` from the repo root, not inside
-`core/` or `cli/`.
+`["core", "cli", "web"]`) so `cli`/`web` can depend on `@sql-formatter/core`
+directly instead of publishing it. Run `npm install` from the repo root, not
+inside `core/`, `cli/`, or `web/`.
 
 ## Architecture decisions (with reasoning — don't re-litigate without cause)
 
@@ -114,6 +114,10 @@ cli/src/
   index.ts             — shebang entry point (`#!/usr/bin/env node`), just calls run(process.argv.slice(2))
   cli.ts               — the actual CLI logic: format-mode arg parsing/template resolution/stdin/file/glob I/O (`resolveFiles()`, backed by `node:fs`'s built-in `globSync`), plus the `infer` subcommand (dispatched on `argv[0] === "infer"`, its own arg parser), exports run() for testing
   cli.test.ts           — integration tests: spawns the CLI via `npx tsx src/index.ts` and asserts on stdout/stderr/exit code, including `sql-format infer` and multi-file/glob describe blocks
+web/                   — Vite + vanilla TypeScript web UI (no framework), scaffolded via `npm create vite -- --template vanilla-ts`. Everything runs client-side in the browser — no server round-trip, consistent with the local-first principle above (SQL text never leaves the page). See the dated section below for the build.
+  src/main.ts            — the entire UI: builds the DOM by string template + querySelector wiring (no framework), two tabs ("Format" / "Infer style from example")
+  src/templates.ts        — imports `../../templates/*.json` directly (Vite JSON import) so the web UI ships the same bundled templates as the CLI, no duplication
+  src/style.css           — dark-themed, two-pane editor layout
 ```
 
 ## Environment gotchas
@@ -128,10 +132,11 @@ cli/src/
   ```bash
   export NVM_DIR="$HOME/.nvm" && \. "$NVM_DIR/nvm.sh"
   ```
-- Install (from repo root, not inside `core/` or `cli/`): `npm install`.
-- Build: `npm run build -w core` / `npm run build -w cli` (tsc). Test:
-  `npx vitest run` from inside `core/` or `cli/`. All need the nvm sourcing
-  above first.
+- Install (from repo root, not inside `core/`, `cli/`, or `web/`): `npm install`.
+- Build: `npm run build -w core` / `npm run build -w cli` / `npm run build -w web`
+  (tsc, or tsc+vite for web). Test: `npx vitest run` from inside `core/` or
+  `cli/`. `web/` has no tests. All need the nvm sourcing above first.
+- Dev server for the web UI: `npm run dev -w web` (Vite, default port 5173).
 
 ## The CLI (`cli/`)
 
@@ -1281,3 +1286,75 @@ to just the two fields still actually deferred); 192 total across
 hand-built examples covering both fields, both boolean-operator styles,
 both JOIN placements, and the `keywordAlign` gating case, before locking in
 as automated tests.
+
+## Web UI built (`web/`), first non-CLI interface
+
+Scaffolded as a new npm workspace via `npm create vite@latest web --
+--template vanilla-ts`, deliberately no framework — matches the core's
+minimal-dependency ethos and the app is simple enough (one page, two tabs,
+no routing/state complexity) not to need one. Root `package.json`'s
+`workspaces` extended to `["core", "cli", "web"]`; `web/package.json`
+renamed to `@sql-formatter/web` and depends on `@sql-formatter/core: "*"`
+the same way `cli` does — resolved via the workspace symlink to `core`'s
+built `dist/`, so `npm run build -w core` must run before `web` can import
+it (same constraint `cli` already had, not new).
+
+Two tabs, both backed by the same `format()`/`inferStyleTemplate()` calls
+the CLI uses:
+
+- **Format**: a two-pane editor (input SQL / formatted output). Template
+  picker offers the three bundled templates (default/compact/river) plus
+  "Custom", populated either by uploading a style-template JSON file or by
+  switching from the Infer tab. Formats on every keystroke (no debounce
+  needed — the core engine is fast enough on realistic script sizes that a
+  debounce would be pure complexity for no perceptible benefit) and on
+  template change. Errors from a malformed/unparseable SQL input surface in
+  an inline error banner rather than a blank output, so a mid-typing
+  incomplete statement doesn't read as silent failure.
+- **Infer style from example**: paste an example script, fill in
+  id/name/dialect/fallback-base, get back the inferred template JSON plus
+  the same per-field low-confidence warnings the CLI's `infer` subcommand
+  prints to stderr — shown inline instead, since there's no stderr in a
+  browser. "Use this template" applies the result as the Format tab's
+  active (custom) template and copies the example SQL into the input pane,
+  so the user immediately sees their own example reformatted through the
+  template just inferred from it — the fastest way to sanity-check the
+  inference actually captured the intended style.
+
+Templates are bundled by importing `../../templates/*.json` directly from
+`web/src/templates.ts` (Vite handles JSON imports natively; `tsconfig.json`
+needed `resolveJsonModule: true` added for `tsc` to typecheck it) rather
+than duplicating the JSON into `web/`— one source of truth, same principle
+as the CLI reading from the same directory at runtime via
+`BUNDLED_TEMPLATES_DIR`.
+
+**Local-first is structural here, not just a policy**: the web UI has no
+backend at all — `format()`/`inferStyleTemplate()` run as in-browser JS
+against whatever's in the textarea. There's no network call for the
+formatting operation itself to even audit; SQL text physically cannot leave
+the tab.
+
+Verified manually end-to-end via the Browser pane (`npm run dev -w web`,
+Vite on port 5173, `.claude/launch.json` added at
+`/home/alejandro/MyApps/.claude/launch.json` since that's the tool's
+working-directory root, one level above the repo — its `runtimeArgs` uses
+`npm --prefix sql-formatter run dev -w web` to reach in): typed SQL and
+confirmed live formatting, switched template to River and confirmed
+re-format into keywordAlign layout, ran Infer on a hand-typed river-style
+example and confirmed low-confidence fields were flagged, applied the
+inferred template via "Use this template" and confirmed it both switched
+tabs and reformatted correctly, and confirmed the copy button's "Copied!"
+feedback. No console errors. `npm run build -w web` (tsc + vite build)
+succeeds. All 192 `core`+`cli` tests still pass (web has no test suite of
+its own yet — not written, since the entire surface was covered directly
+via the Browser pane rather than jsdom/Playwright, and there's no
+formatting *logic* in `web/` to unit-test, only DOM wiring around calls
+into the already-tested core).
+
+**Not yet done**: no build/deploy step for actually hosting the page
+anywhere (it's dev-server-only so far — `npm run preview -w web` serves
+the production build locally but nothing is deployed); no persistence of
+uploaded/inferred custom templates across a page reload (in-memory only,
+matches "personal local tool" scope, revisit if it becomes annoying in
+practice); no dark/light theme toggle (dark-only, matches the editor-tool
+aesthetic, not a general-audience page).

@@ -1,0 +1,269 @@
+import "./style.css";
+import { format, inferStyleTemplate } from "@sql-formatter/core";
+import type { StyleTemplate, Dialect, InferResult } from "@sql-formatter/core";
+import { BUNDLED_TEMPLATES } from "./templates";
+
+const DIALECTS: Dialect[] = ["generic", "postgres", "snowflake", "sqlite"];
+
+document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
+  <header>
+    <h1>SQL Formatter</h1>
+    <p>Formats SQL entirely in your browser — nothing is sent anywhere.</p>
+  </header>
+
+  <div class="tabs">
+    <button class="tab active" data-tab="format" type="button">Format</button>
+    <button class="tab" data-tab="infer" type="button">Infer style from example</button>
+  </div>
+
+  <section class="panel active" id="panel-format">
+    <div class="toolbar">
+      <label>
+        Template
+        <select id="template-select">
+          <option value="default">Default</option>
+          <option value="compact">Compact</option>
+          <option value="river">River</option>
+          <option value="custom" id="custom-option" disabled>Custom (uploaded/inferred)</option>
+        </select>
+      </label>
+      <input type="file" id="template-file" accept="application/json,.json" hidden />
+      <button type="button" class="secondary" id="upload-template-btn">Upload template…</button>
+      <button type="button" id="format-btn">Format</button>
+      <button type="button" class="secondary" id="copy-btn">Copy output</button>
+      <span class="template-info" id="template-info"></span>
+    </div>
+    <div class="error-banner" id="format-error"></div>
+    <div class="editor-grid">
+      <div class="editor-col">
+        <div class="col-header">Input SQL</div>
+        <textarea id="sql-input" spellcheck="false" placeholder="Paste SQL here…"></textarea>
+      </div>
+      <div class="editor-col">
+        <div class="col-header">Formatted</div>
+        <pre class="output" id="sql-output"></pre>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-infer">
+    <div class="infer-fields">
+      <label>Id <input type="text" id="infer-id" placeholder="jane-default" /></label>
+      <label>Name <input type="text" id="infer-name" placeholder="Jane's style" /></label>
+      <label>
+        Dialect
+        <select id="infer-dialect">
+          ${DIALECTS.map((d) => `<option value="${d}">${d}</option>`).join("")}
+        </select>
+      </label>
+      <label>
+        Fallback base
+        <select id="infer-base">
+          <option value="default">Default</option>
+          <option value="compact">Compact</option>
+          <option value="river">River</option>
+        </select>
+      </label>
+      <button type="button" id="infer-btn">Infer style</button>
+      <button type="button" id="use-template-btn" disabled>Use this template</button>
+    </div>
+    <div class="error-banner" id="infer-error"></div>
+    <div class="infer-grid">
+      <div class="editor-col">
+        <div class="col-header">Example SQL (already formatted in the style you want)</div>
+        <textarea id="infer-input" spellcheck="false" placeholder="Paste an example already formatted the way you like…"></textarea>
+      </div>
+      <div class="editor-col">
+        <div class="col-header">Inferred template</div>
+        <pre class="output" id="infer-output"></pre>
+      </div>
+    </div>
+    <div class="warnings" id="infer-warnings"></div>
+  </section>
+`;
+
+// ---------------------------------------------------------------------------
+// Tabs
+
+const tabs = document.querySelectorAll<HTMLButtonElement>(".tab");
+const panels = {
+  format: document.querySelector<HTMLElement>("#panel-format")!,
+  infer: document.querySelector<HTMLElement>("#panel-infer")!,
+};
+
+tabs.forEach((tab) => {
+  tab.addEventListener("click", () => {
+    tabs.forEach((t) => t.classList.remove("active"));
+    tab.classList.add("active");
+    const target = tab.dataset.tab as keyof typeof panels;
+    Object.entries(panels).forEach(([name, panel]) => panel.classList.toggle("active", name === target));
+  });
+});
+
+function activateTab(name: keyof typeof panels): void {
+  tabs.forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
+  Object.entries(panels).forEach(([n, panel]) => panel.classList.toggle("active", n === name));
+}
+
+// ---------------------------------------------------------------------------
+// Format panel
+
+const templateSelect = document.querySelector<HTMLSelectElement>("#template-select")!;
+const customOption = document.querySelector<HTMLOptionElement>("#custom-option")!;
+const templateFileInput = document.querySelector<HTMLInputElement>("#template-file")!;
+const uploadTemplateBtn = document.querySelector<HTMLButtonElement>("#upload-template-btn")!;
+const templateInfo = document.querySelector<HTMLElement>("#template-info")!;
+const formatBtn = document.querySelector<HTMLButtonElement>("#format-btn")!;
+const copyBtn = document.querySelector<HTMLButtonElement>("#copy-btn")!;
+const formatError = document.querySelector<HTMLElement>("#format-error")!;
+const sqlInput = document.querySelector<HTMLTextAreaElement>("#sql-input")!;
+const sqlOutput = document.querySelector<HTMLElement>("#sql-output")!;
+
+let activeTemplate: StyleTemplate = BUNDLED_TEMPLATES.default;
+
+function showFormatError(message: string | null): void {
+  if (message) {
+    formatError.textContent = message;
+    formatError.classList.add("visible");
+  } else {
+    formatError.textContent = "";
+    formatError.classList.remove("visible");
+  }
+}
+
+function renderTemplateInfo(): void {
+  const t = activeTemplate;
+  templateInfo.textContent = `${t.name} (${t.id}) · ${t.dialect} · ${t.style.layout.mode}`;
+}
+
+function setActiveTemplate(template: StyleTemplate, selectValue: string, customLabel = ""): void {
+  activeTemplate = template;
+  customOption.disabled = selectValue !== "custom";
+  customOption.textContent = customLabel ? `Custom (${customLabel})` : "Custom (uploaded/inferred)";
+  templateSelect.value = selectValue;
+  renderTemplateInfo();
+  runFormat();
+}
+
+function runFormat(): void {
+  const sql = sqlInput.value;
+  if (!sql.trim()) {
+    sqlOutput.textContent = "";
+    showFormatError(null);
+    return;
+  }
+  try {
+    sqlOutput.textContent = format(sql, activeTemplate);
+    showFormatError(null);
+  } catch (err) {
+    showFormatError(err instanceof Error ? err.message : String(err));
+  }
+}
+
+templateSelect.addEventListener("change", () => {
+  const value = templateSelect.value;
+  if (value === "custom") {
+    renderTemplateInfo();
+    runFormat();
+    return;
+  }
+  setActiveTemplate(BUNDLED_TEMPLATES[value], value);
+});
+
+uploadTemplateBtn.addEventListener("click", () => templateFileInput.click());
+
+templateFileInput.addEventListener("change", async () => {
+  const file = templateFileInput.files?.[0];
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const parsed = JSON.parse(text) as StyleTemplate;
+    if (!parsed?.style?.layout) throw new Error("Not a valid style template (missing `style` fields).");
+    setActiveTemplate(parsed, "custom", file.name);
+  } catch (err) {
+    showFormatError(`Couldn't load template: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    templateFileInput.value = "";
+  }
+});
+
+formatBtn.addEventListener("click", runFormat);
+sqlInput.addEventListener("input", runFormat);
+
+copyBtn.addEventListener("click", async () => {
+  if (!sqlOutput.textContent) return;
+  await navigator.clipboard.writeText(sqlOutput.textContent);
+  const original = copyBtn.textContent;
+  copyBtn.textContent = "Copied!";
+  setTimeout(() => (copyBtn.textContent = original), 1200);
+});
+
+renderTemplateInfo();
+
+// ---------------------------------------------------------------------------
+// Infer panel
+
+const inferIdInput = document.querySelector<HTMLInputElement>("#infer-id")!;
+const inferNameInput = document.querySelector<HTMLInputElement>("#infer-name")!;
+const inferDialectSelect = document.querySelector<HTMLSelectElement>("#infer-dialect")!;
+const inferBaseSelect = document.querySelector<HTMLSelectElement>("#infer-base")!;
+const inferBtn = document.querySelector<HTMLButtonElement>("#infer-btn")!;
+const useTemplateBtn = document.querySelector<HTMLButtonElement>("#use-template-btn")!;
+const inferError = document.querySelector<HTMLElement>("#infer-error")!;
+const inferInput = document.querySelector<HTMLTextAreaElement>("#infer-input")!;
+const inferOutput = document.querySelector<HTMLElement>("#infer-output")!;
+const inferWarnings = document.querySelector<HTMLElement>("#infer-warnings")!;
+
+let lastInferResult: InferResult | null = null;
+
+function showInferError(message: string | null): void {
+  if (message) {
+    inferError.textContent = message;
+    inferError.classList.add("visible");
+  } else {
+    inferError.textContent = "";
+    inferError.classList.remove("visible");
+  }
+}
+
+inferBtn.addEventListener("click", () => {
+  const sql = inferInput.value;
+  const id = inferIdInput.value.trim();
+  const name = inferNameInput.value.trim();
+  if (!sql.trim()) return showInferError("Paste an example SQL script first.");
+  if (!id || !name) return showInferError("Id and name are required.");
+
+  try {
+    const result = inferStyleTemplate(sql, {
+      id,
+      name,
+      dialect: inferDialectSelect.value as Dialect,
+      baseTemplate: BUNDLED_TEMPLATES[inferBaseSelect.value],
+    });
+    lastInferResult = result;
+    inferOutput.textContent = JSON.stringify(result.template, null, 2);
+    inferWarnings.innerHTML = result.warnings.length
+      ? `<strong>Low-confidence fields — review by hand:</strong><ul>${result.warnings
+          .map((w) => `<li class="confidence-low">${escapeHtml(w)}</li>`)
+          .join("")}</ul>`
+      : "No warnings — every field found a confident signal in the example.";
+    useTemplateBtn.disabled = false;
+    showInferError(null);
+  } catch (err) {
+    lastInferResult = null;
+    useTemplateBtn.disabled = true;
+    showInferError(err instanceof Error ? err.message : String(err));
+  }
+});
+
+useTemplateBtn.addEventListener("click", () => {
+  if (!lastInferResult) return;
+  setActiveTemplate(lastInferResult.template, "custom", lastInferResult.template.name);
+  sqlInput.value = inferInput.value;
+  activateTab("format");
+  runFormat();
+});
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+}

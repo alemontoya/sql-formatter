@@ -1,5 +1,5 @@
 {
   "name": "sql-formatter",
   "private": true,
-  "workspaces": ["core", "cli"]
+  "workspaces": ["core", "cli", "web"]
 }
