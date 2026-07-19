@@ -260,6 +260,95 @@ describe("format (comments around a statement-terminating semicolon)", () => {
   });
 });
 
+describe("format (quoting.forceQuoteIdentifiers / quoting.quoteChar)", () => {
+  function withQuoting(forceQuoteIdentifiers: boolean, quoteChar: "double" | "backtick" | "bracket" | "none"): StyleTemplate {
+    return { ...defaultTemplate, style: { ...defaultTemplate.style, quoting: { forceQuoteIdentifiers, quoteChar } } };
+  }
+
+  it("forceQuoteIdentifiers: false, quoteChar: none (default) leaves identifiers untouched", () => {
+    const sql = "select id, user_name from users;";
+    const out = format(sql, withQuoting(false, "none"));
+    expect(out).toContain("id,");
+    expect(out).toContain("user_name");
+    expect(out).toContain("FROM users;");
+  });
+
+  it("forceQuoteIdentifiers: true, quoteChar: double quotes every plain identifier", () => {
+    const sql = "select id, user_name from users where id = 1;";
+    const out = format(sql, withQuoting(true, "double"));
+    expect(out).toBe(
+      ["SELECT", '  "id",', '  "user_name"', 'FROM "users"', 'WHERE "id" = 1;', ""].join("\n")
+    );
+  });
+
+  it("forceQuoteIdentifiers: true, quoteChar: backtick quotes with backticks instead", () => {
+    const sql = "select id from users;";
+    const out = format(sql, withQuoting(true, "backtick"));
+    expect(out).toContain("SELECT `id`");
+    expect(out).toContain("FROM `users`;");
+  });
+
+  it("forceQuoteIdentifiers: true, quoteChar: bracket quotes with brackets", () => {
+    const sql = "select id from users;";
+    const out = format(sql, withQuoting(true, "bracket"));
+    expect(out).toContain("SELECT [id]");
+    expect(out).toContain("FROM [users];");
+  });
+
+  it("forceQuoteIdentifiers: true but quoteChar: none is a no-op (no quote char to use)", () => {
+    const sql = "select id from users;";
+    const out = format(sql, withQuoting(true, "none"));
+    expect(out).toContain("SELECT id");
+    expect(out).toContain("FROM users;");
+  });
+
+  it("does not force-quote a function or type name, only identifiers", () => {
+    const sql = "select count(id)::int from users;";
+    const out = format(sql, withQuoting(true, "double"));
+    expect(out).toContain("COUNT(");
+    expect(out).toContain("::INT");
+    expect(out).not.toContain('"COUNT"');
+    expect(out).not.toContain('"INT"');
+  });
+
+  it("converts an already-quoted identifier's quote character even when forceQuoteIdentifiers is false", () => {
+    const sql = 'select "id", user_name from "users";';
+    const out = format(sql, withQuoting(false, "backtick"));
+    expect(out).toContain("`id`,");
+    expect(out).toContain("user_name");
+    expect(out).toContain("FROM `users`;");
+  });
+
+  it("quoteChar: none leaves an already-quoted identifier's quote character untouched", () => {
+    const sql = 'select "id" from "users";';
+    const out = format(sql, withQuoting(false, "none"));
+    expect(out).toContain('"id"');
+    expect(out).toContain('"users"');
+  });
+
+  it("preserves an existing quoted identifier's original casing, ignoring casing.identifiers", () => {
+    const upperIdentifiers: StyleTemplate = {
+      ...defaultTemplate,
+      style: {
+        ...defaultTemplate.style,
+        casing: { ...defaultTemplate.style.casing, identifiers: "upper" },
+        quoting: { forceQuoteIdentifiers: false, quoteChar: "none" },
+      },
+    };
+    const sql = 'select "myCol" from t;';
+    const out = format(sql, upperIdentifiers);
+    expect(out).toContain('"myCol"'); // untouched — quoted identifiers are case-sensitive
+    expect(out).toContain("FROM T;"); // plain identifier still gets casing.identifiers
+  });
+
+  it("is idempotent when force-quoting", () => {
+    const sql = "select id, user_name from users where id = 1;";
+    const once = format(sql, withQuoting(true, "double"));
+    const twice = format(once, withQuoting(true, "double"));
+    expect(twice).toBe(once);
+  });
+});
+
 describe("format (CASE)", () => {
   it("preserves a comment on its own line before a WHEN branch", () => {
     const sql = ["select case", "  -- studio", "  when x = 1 then 'a'", "  else 'b'", "end from t;"].join("\n");

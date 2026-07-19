@@ -254,12 +254,15 @@ not template-specific hacks:
   it (a same-line trailing comment on the statement's *last real token*
   could get the synthesized `;` appended inside the comment's text,
   corrupting it — not the same case as this bullet, but directly adjacent).
-- `quoting.forceQuoteIdentifiers` isn't implemented in the printer (both
-  `default.json`/`compact.json` have it `false`, so untested there).
-  `inferStyleTemplate()` *does* infer a best-effort value for it (checks
-  whether any quoted identifier in the example didn't actually need
-  quoting), but inferring a value for a field the printer doesn't act on yet
-  is a no-op until someone implements it.
+- ~~`quoting.forceQuoteIdentifiers` isn't implemented...~~ **Implemented** —
+  see the dated section below, which also implements `quoting.quoteChar`'s
+  other half (converting an *already*-quoted identifier's quote character),
+  since the field was equally unimplemented and the two are naturally one
+  change. Bracket-quoted identifiers (`[foo]`) still aren't tokenized as a
+  single `quotedIdentifier` token (see the array-indexing bug note below),
+  so converting *from* an existing bracket-quoted identifier isn't
+  reachable — only *to* bracket style, for a previously-unquoted or
+  double/backtick-quoted identifier.
 - `lists.wrapThresholdItems`, `commas.alignAfterComma`,
   `joins.multiConditionIndent`, `booleanOperators.indentContinuation` are
   **not attempted by `inferStyleTemplate()`** (always 0 confidence, value
@@ -1121,3 +1124,70 @@ pre-existing + 6 new); 174 total across `core`+`cli`. `infer.ts` destructures
 only `leaves`/`hadSemicolon` from `splitStatements()`'s return value, so the
 two new fields didn't require any change there. Verified manually against
 the CLI for all four scenarios plus idempotency round-trips.
+
+## `quoting.forceQuoteIdentifiers` / `quoting.quoteChar` implemented
+
+Next item on the "Known v1 gaps" list. Neither field had any printer
+behavior — `printer.ts` never read `ctx.style.quoting` at all. Both
+bundled templates use `forceQuoteIdentifiers: false`/`quoteChar: "none"`,
+so this was invisible until someone actually set either field.
+
+Implemented in `renderLeafText()` (`printer.ts`), the single function every
+leaf's printed text already funnels through, so no new call sites were
+needed:
+
+- **`kind === "identifier"`** (a plain, previously-unquoted identifier —
+  table/column names, not function or type names, which have their own
+  `casing.functions`/`casing.types` and are deliberately untouched by this
+  field): casing is applied first as usual, then, if
+  `forceQuoteIdentifiers` is true and `quoteChar !== "none"`, the result is
+  wrapped in the target quote style via new `quoteIdentifier()`. No
+  escaping is needed for this direction — a valid unquoted SQL identifier
+  can only contain `[A-Za-z0-9_$]` (per the tokenizer's
+  `isIdentifierPart()`), so it can never itself contain a quote character.
+- **`kind === "raw"`** (the default branch — covers `token.type ===
+  "quotedIdentifier"` among other non-identifier/keyword tokens): if the
+  token is an already-quoted identifier and `quoteChar !== "none"`, its
+  existing quote characters are stripped and doubled-quote escapes
+  unescaped (new `unquoteIdentifier()`), then re-quoted in the target
+  style via the same `quoteIdentifier()`. This runs independent of
+  `forceQuoteIdentifiers` — an already-quoted identifier doesn't need
+  "forcing," it just needs its quote *character* converted, matching the
+  schema's own description ("`none` leaves existing quoting untouched",
+  implying any other value **does** touch existing quoting). Casing is
+  deliberately never applied on this path — quoted identifiers are
+  case-sensitive in SQL, so `casing.identifiers` would silently change
+  program behavior if applied here, unlike a plain identifier being
+  force-quoted (which stays byte-identical to how the printer already
+  cased it before this feature existed).
+
+`quoteChar: "none"` is checked on both paths, making it a true no-op
+regardless of `forceQuoteIdentifiers` — including the (contradictory,
+degenerate) case of `forceQuoteIdentifiers: true` with `quoteChar: "none"`,
+where there's simply no quote character to force with; treated as a no-op
+rather than an error, consistent with how the rest of the printer handles
+unusual-but-not-invalid field combinations.
+
+**Known limitation, inherent to the tokenizer, not this change**: bracket-
+quoted identifiers (`[foo]`) aren't tokenized as a single `quotedIdentifier`
+token at all — per the array-indexing bug note above, `[`/`]` are plain
+punctuation leaves, with the identifier between them a separate token. So
+`quoteChar` conversion only reliably reads *from* double/backtick-quoted
+source identifiers; converting *from* an existing bracket-quoted identifier
+to another style isn't reachable without deeper tokenizer changes (treating
+bracket-quoting as its own recognized token, which would also need to
+disambiguate from array-indexing `[0]`/SQLite's identical bracket syntax —
+out of scope here). Converting *to* bracket style, for a previously
+unquoted or double/backtick-quoted identifier, works fine and is tested.
+
+10 new tests in `format.test.ts`'s `describe("format
+(quoting.forceQuoteIdentifiers / quoting.quoteChar)")`: unchanged default
+baseline, force-quote with each of double/backtick/bracket, `quoteChar:
+"none"` making `forceQuoteIdentifiers: true` a no-op, function/type names
+staying unquoted, converting an existing quoted identifier's quote
+character with `forceQuoteIdentifiers: false`, `quoteChar: "none"` leaving
+existing quoting untouched, an existing quoted identifier keeping its
+original casing regardless of `casing.identifiers`, and idempotency. All
+157 `core` tests pass (147 pre-existing + 10 new); 184 total across
+`core`+`cli`. Verified manually against the CLI for every combination
+above plus an idempotency round-trip.

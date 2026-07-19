@@ -126,8 +126,44 @@ class Builder {
   }
 }
 
+const QUOTE_CHARS: Record<"double" | "backtick" | "bracket", [string, string]> = {
+  double: ['"', '"'],
+  backtick: ["`", "`"],
+  bracket: ["[", "]"],
+};
+
+/** Wraps a bare (unescaped) identifier name in `style`'s quote characters,
+ * doubling any occurrence of the quote character itself for double/backtick
+ * (the standard SQL escape convention for those). Bracket has no standard
+ * in-identifier escape convention, so it's left unescaped — acceptable
+ * since this is only reached for identifiers being newly quoted, never for
+ * re-parsing an existing bracket-quoted identifier (see `unquoteIdentifier`'s
+ * doc comment for why that direction isn't supported). */
+function quoteIdentifier(name: string, style: "double" | "backtick" | "bracket"): string {
+  const [open, close] = QUOTE_CHARS[style];
+  if (style === "bracket") return open + name + close;
+  return open + name.split(open).join(open + open) + close;
+}
+
+/** Strips an existing `quotedIdentifier` token's quote characters and
+ * unescapes doubled-quote-char escapes, returning the bare name — so it can
+ * be re-quoted in a different `quoting.quoteChar` style. Only double- and
+ * backtick-quoted identifiers are ever tokenized as `quotedIdentifier`
+ * (see the array-indexing bug in `HANDOFF.md`: `[foo]` tokenizes as plain
+ * `[`/identifier/`]` leaves, not a single quoted-identifier token) — so
+ * converting *from* an existing bracket-quoted identifier isn't reachable
+ * here; only *to* bracket style (via `quoteIdentifier` above, for a
+ * previously-unquoted or double/backtick-quoted identifier) is supported. */
+function unquoteIdentifier(raw: string): string {
+  const first = raw[0];
+  if (first === '"') return raw.slice(1, -1).split('""').join('"');
+  if (first === "`") return raw.slice(1, -1).split("``").join("`");
+  return raw;
+}
+
 function renderLeafText(leaf: Leaf, kind: "keyword" | "function" | "type" | "identifier" | "raw", ctx: Ctx): string {
   const { token } = leaf;
+  const quoteChar = ctx.style.quoting.quoteChar;
   switch (kind) {
     case "keyword":
       return applyCasing(token.value, ctx.style.casing.keywords);
@@ -135,9 +171,18 @@ function renderLeafText(leaf: Leaf, kind: "keyword" | "function" | "type" | "ide
       return applyCasing(token.value, ctx.style.casing.functions);
     case "type":
       return applyCasing(token.value, ctx.style.casing.types);
-    case "identifier":
-      return applyCasing(token.value, ctx.style.casing.identifiers);
+    case "identifier": {
+      const cased = applyCasing(token.value, ctx.style.casing.identifiers);
+      return ctx.style.quoting.forceQuoteIdentifiers && quoteChar !== "none" ? quoteIdentifier(cased, quoteChar) : cased;
+    }
     default:
+      // Covers already-quoted identifiers (token.type === "quotedIdentifier")
+      // among other non-identifier/keyword tokens. Quoted identifiers are
+      // case-sensitive in SQL, so casing.identifiers deliberately never
+      // applies here — only the quote *character* is converted.
+      if (token.type === "quotedIdentifier" && quoteChar !== "none") {
+        return quoteIdentifier(unquoteIdentifier(token.value), quoteChar);
+      }
       return token.value;
   }
 }
