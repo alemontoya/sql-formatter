@@ -255,12 +255,17 @@ added to `KEYWORDS`.
    deferred (see the river-style/inference section below) — only worth
    picking up if a real example shows up whose style genuinely doesn't
    reduce to the rule-based fields covered so far.
-5. Fix the known `classifyLeaf()` bug where an identifier immediately
-   followed by `(...)` gets misclassified as a function call and cased with
-   `casing.functions` instead of `casing.identifiers` — surfaced by
-   `INSERT INTO t (a) VALUES (1)` uppercasing `t` to `T` with the default
-   template. Unrelated to the river-style/inference work, just found in
-   passing while testing it.
+5. ~~Fix the known `classifyLeaf()` bug...~~ **Fixed.** An identifier
+   immediately followed by `(...)` in table-ref position (`INSERT INTO t
+   (a)`, `CREATE TABLE t (a int)`, `ALTER TABLE t (...)`) was getting
+   misclassified as a function call and cased with `casing.functions`
+   instead of `casing.identifiers`. `classifyLeaf()` now recognizes
+   table-ref position two ways: the preceding `INTO`/`TABLE` keyword still
+   sitting in the same node sequence (covers `CREATE TABLE`/`ALTER TABLE`,
+   which aren't recognized clause starters), or a `bodyStartsAtTableRef`
+   flag `printClauseBody()` passes for `INSERT INTO`, whose keyword gets
+   split off into `clause.keyword` before the body reaches `classifyLeaf`.
+   Regression tests in `format.test.ts`.
 
 ## JOIN/CTE test coverage (added, with real bugs found and fixed)
 
