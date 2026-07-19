@@ -6,9 +6,10 @@ formats losslessly off a custom tokenizer (no SQL parsing library round-trip
 to drop things), and supports both conventional indented layout and
 "river style" keyword-alignment layout.
 
-This is a personal tool. Two interfaces are shipped today: a CLI (below) and
-a web UI ([web/README.md](web/README.md)) — no VS Code / DBeaver integration
-yet.
+This is a personal tool. Interfaces shipped today: a CLI (below), a web UI
+([web/README.md](web/README.md)), a [VS Code extension](vscode-extension/README.md),
+and [DBeaver integration](#dbeaver-integration) (below — reuses the CLI directly,
+no separate plugin).
 
 ## Install
 
@@ -122,6 +123,40 @@ sql-format infer <example-file> --id <id> --name <name> [options]
 
 Run `sql-format --help` for the complete, up-to-date help text (including
 `infer`'s options).
+
+## DBeaver integration
+
+DBeaver has a built-in "External formatter" option (Preferences > Editors >
+SQL Editor > Formatting) that shells out to a command-line tool, writes the
+current SQL to a temp file, runs the command with `${file}` substituted for
+that temp file's path, and reads the file back — expecting it rewritten in
+place. `sql-format --write <file>` already does exactly that, so DBeaver
+integration is just pointing it at the built CLI; no separate plugin needed
+(DBeaver plugins are Java/Eclipse-based, and a shell-out was always the plan
+— see [HANDOFF.md](HANDOFF.md)'s architecture-decisions section).
+
+1. Build once: `npm run build -w core -w cli` from the repo root.
+2. In DBeaver: **Preferences > Editors > SQL Editor > Formatting**.
+3. Set **Formatter** to **External**.
+4. Check **Use temp file** (required — this is how `${file}` gets populated).
+5. Set **Command line** to the built CLI, invoked with an explicit `node`
+   path so it doesn't depend on DBeaver inheriting your shell's `PATH`:
+
+   ```
+   /absolute/path/to/node /absolute/path/to/sql-formatter/cli/dist/index.js ${file} --write --template default
+   ```
+
+   Swap `--template default` for `compact`, `river`, or a path to your own
+   style-template JSON. Find your `node` path with `which node`.
+6. Set a reasonable **Exec timeout** (2000ms is enough for realistic
+   scripts).
+
+Not verified against a live DBeaver install in this session (DBeaver isn't
+installed on this machine) — verified instead by scripting the exact
+sequence DBeaver's external formatter performs (write a temp file, run the
+command, read the file back) and confirming `sql-format --write` rewrites it
+correctly in place. If DBeaver's actual behavior differs from the documented
+contract, the command above may need adjusting.
 
 ## Development
 

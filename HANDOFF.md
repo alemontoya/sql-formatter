@@ -11,8 +11,11 @@ the user drives architecture/product decisions and reviews output.
 The **style-template schema**, the **core formatting engine** (tokenizer +
 layout/printer, including a "river style" keyword-alignment layout mode), a
 **rule-based style-inference engine**, a **CLI wrapper** (`sql-format`,
-with an `infer` subcommand), and a **web UI** (`web/`) are built and
-working. No VS Code extension or DBeaver integration yet.
+with an `infer` subcommand), a **web UI** (`web/`), a **VS Code extension**
+(`vscode-extension/`), and **DBeaver integration** (documented in the root
+README — reuses the CLI's `--write` flag via DBeaver's built-in External
+Formatter, no separate plugin) are all built and working. Every planned
+interface is now shipped.
 
 Read `templates/default.json`, `templates/compact.json`, and
 `templates/river.json` for what a style template looks like, and skim
@@ -21,15 +24,20 @@ the whole pipeline together and is the fastest way to understand the
 architecture.
 
 The repo is an **npm workspace** (`package.json` at the root lists
-`["core", "cli", "web"]`) so `cli`/`web` can depend on `@sql-formatter/core`
-directly instead of publishing it. Run `npm install` from the repo root, not
-inside `core/`, `cli/`, or `web/`.
+`["core", "cli", "web", "vscode-extension"]`) so `cli`/`web`/`vscode-extension`
+can depend on `@sql-formatter/core` directly instead of publishing it. Run
+`npm install` from the repo root, not inside any workspace member.
 
 ## Architecture decisions (with reasoning — don't re-litigate without cause)
 
-- **Interfaces planned**: web UI, VS Code extension, DBeaver integration
-  (lowest priority — DBeaver plugins are Java/Eclipse-based, so integration
-  means shelling out to a compiled core binary, not in-process embedding).
+- **Interfaces**: web UI, VS Code extension, DBeaver integration — all
+  shipped now. DBeaver was originally expected to need "shelling out to a
+  compiled core binary" since DBeaver plugins are Java/Eclipse-based, not
+  in-process embeddable; that held, but turned out simpler than a fresh
+  binary — DBeaver's own built-in "External formatter" preference already
+  shells out to an arbitrary command with a temp file, which the existing
+  `sql-format --write` CLI satisfies directly with zero new code. See the
+  dated section below.
 - **One core, thin shells.** All interfaces call into the same TypeScript
   core rather than reimplementing formatting logic per platform.
 - **Core language: TypeScript.** VS Code extensions require JS/TS natively;
@@ -118,6 +126,12 @@ web/                   — Vite + vanilla TypeScript web UI (no framework), scaf
   src/main.ts            — the entire UI: builds the DOM by string template + querySelector wiring (no framework), two tabs ("Format" / "Infer style from example")
   src/templates.ts        — imports `../../templates/*.json` directly (Vite JSON import) so the web UI ships the same bundled templates as the CLI, no duplication
   src/style.css           — dark-themed, two-pane editor layout
+vscode-extension/       — VS Code extension, esbuild-bundled (no vscode/webpack tooling). See the dated section below for the build.
+  src/extension.ts        — activate(): registers a DocumentFormattingEditProvider for language "sql" plus the `sqlFormatter.inferStyleFromSelection` command
+  src/resolveTemplate.ts   — resolves the `sqlFormatter.template` setting to a StyleTemplate; deliberately free of any `vscode` import so it's unit-testable in plain vitest
+  src/templates.ts         — same pattern as web/'s: imports `../../templates/*.json` directly, bundled into dist/extension.js by esbuild at build time (no runtime file dependency once packaged)
+  src/resolveTemplate.test.ts, src/extension.test.ts — vitest; extension.test.ts mocks the `vscode` module (`vi.mock("vscode", ...)`) to exercise activation/registration wiring without an extension host
+  esbuild.mjs              — bundles src/extension.ts -> dist/extension.js, external: ["vscode"] (provided by the real extension host at runtime, never bundled)
 ```
 
 ## Environment gotchas
@@ -1358,3 +1372,105 @@ uploaded/inferred custom templates across a page reload (in-memory only,
 matches "personal local tool" scope, revisit if it becomes annoying in
 practice); no dark/light theme toggle (dark-only, matches the editor-tool
 aesthetic, not a general-audience page).
+
+## VS Code extension and DBeaver integration built — every planned interface now shipped
+
+Both were the two remaining items from the original interfaces list.
+
+**DBeaver first, because it turned out to need zero new code.** The
+original assumption ("shelling out to a compiled core binary") was
+investigated properly rather than assumed: DBeaver has a built-in "External
+formatter" preference (Preferences > Editors > SQL Editor > Formatting)
+that writes the current SQL to a temp file, runs a configured command with
+`${file}` substituted for that path, and reads the file back expecting it
+rewritten in place — confirmed via web search against DBeaver
+documentation/community threads, not guessed. `sql-format --write <file>`
+already does exactly that. Verified by scripting the identical sequence
+DBeaver's formatter performs (write a temp `.sql` file, run
+`node cli/dist/index.js <file> --write --template default`, read the file
+back) and confirming the rewrite is correct — DBeaver itself isn't
+installed on this machine, so the live GUI integration hasn't been
+click-tested, only the command contract it depends on. Documented in the
+root [README.md](README.md)'s "DBeaver integration" section with the exact
+Preferences steps and a command line using an explicit `node` path (so it
+doesn't depend on DBeaver inheriting a shell `PATH` when launched from a
+desktop icon rather than a terminal).
+
+**VS Code extension** (`vscode-extension/`) — new workspace, scaffolded by
+hand (not `yo code`, to avoid pulling in generator-yeoman's dependency
+tree for a one-file extension) and bundled with esbuild directly rather
+than vsce's webpack template, matching the minimal-tooling approach `web/`
+already established. `vscode-extension/package.json`'s `dependencies`
+lists `@sql-formatter/core: "*"`, resolved the same way `cli`/`web` already
+do via the npm workspace symlink — `core` must be built first.
+
+Two features, both built on the same `format()`/`inferStyleTemplate()`
+calls the CLI and web UI already use:
+
+- **Format Document integration** — `vscode.languages.registerDocumentFormattingEditProvider`
+  for `{ language: "sql" }`, so the standard `Shift+Alt+F` / "Format
+  Document" command works on any `.sql` file with no extra UI. Reads the
+  `sqlFormatter.template` setting (bundled name or a file path, resolved
+  relative to the document's workspace folder if not absolute) via a new
+  `resolveTemplate()` — deliberately written with **no `vscode` import at
+  all**, so it's plain-vitest-testable without an extension host. Template
+  load/parse errors surface via `vscode.window.showErrorMessage` and the
+  formatter returns no edits (rather than throwing out of the provider,
+  which VS Code would just show as a generic failure with no useful
+  message).
+- **`SQL Formatter: Infer Style From Selection` command** — reads the
+  active selection (or the whole document if nothing's selected), prompts
+  for id/name/dialect via `showInputBox`/`showQuickPick`, runs
+  `inferStyleTemplate()`, and opens the resulting template JSON as a new
+  untitled document. Low-confidence fields raise a
+  `showWarningMessage` — mirrors the CLI `infer` subcommand's stderr
+  warnings and the web UI's inline warning list, adapted to whatever each
+  host's idiomatic "surface a warning" mechanism is.
+
+Bundled templates: same DRY approach as `web/` —
+`vscode-extension/src/templates.ts` imports `../../templates/*.json`
+directly. Unlike the web UI (Vite handles JSON imports at both dev-server
+and build time), this needed `resolveJsonModule: true` in
+`vscode-extension/tsconfig.json` for `tsc --noEmit` typechecking, and
+esbuild's own native JSON-import support inlines the objects into
+`dist/extension.js` at bundle time — so the packaged `.vsix` has no runtime
+dependency on `templates/` existing on disk at all, important since an
+installed extension can't assume it's still sitting next to the source
+repo.
+
+**Testing decision, made deliberately rather than skipped**: this machine
+actually has a real, already-installed VS Code (`/usr/bin/code`, version
+1.129.0) with a live desktop session (`DISPLAY=:0`), so launching a true
+end-to-end test via `@vscode/test-electron` was technically possible.
+Chose not to — doing so would pop a visible VS Code window on the user's
+real, currently-in-use desktop as a side effect of an unattended coding
+session, which is a disruptive, visible action outside this repo's
+sandbox, not something to do without asking first. Used `vi.mock("vscode",
+...)` in `extension.test.ts` instead: a minimal fake of the `languages`/
+`commands`/`workspace`/`window` surface `extension.ts` actually touches,
+enough to verify `activate()` registers both contributions correctly, the
+formatting provider produces the right `TextEdit` for a known
+input+template (including the compact-template and template-resolution-
+failure paths), and the infer command's full prompt-fill-then-open-
+document flow works and correctly threads through the
+id/name/dialect the user "typed." 13 tests total (7 for
+`resolveTemplate.ts`, 6 for `extension.ts`), all passing. This gives strong
+confidence in the wiring without ever touching the real desktop. If a true
+Extension Development Host smoke test is wanted later, `.vscode/launch.json`
+(`vscode-extension/.vscode/launch.json`) is already set up for **Run and
+Debug > Run Extension** — that's an explicit, visible action the user takes
+themselves, not something to trigger unattended.
+
+**Packaging**: no `.vsix` has been built or installed in this session —
+`vscode-extension/README.md` documents the `npx @vscode/vsce package
+--no-dependencies` + `code --install-extension` steps but neither was run,
+for the same reason the live-window test wasn't: installing an extension
+into the user's real VS Code is a real, visible action on their actual
+environment, left for them to run explicitly rather than done as a side
+effect of this work.
+
+All `core`+`cli` tests (192) and the new `vscode-extension` tests (13) pass;
+`web` still has none of its own (unchanged from before). Both
+`npm run build -w vscode-extension` (tsc + esbuild) and the existing
+`npm run build -w web`/`-w core`/`-w cli` all succeed from a clean
+`npm install` at the repo root.

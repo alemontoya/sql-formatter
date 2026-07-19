@@ -1,5 +1,5 @@
 {
   "name": "sql-formatter",
   "private": true,
-  "workspaces": ["core", "cli", "web"]
+  "workspaces": ["core", "cli", "web", "vscode-extension"]
 }

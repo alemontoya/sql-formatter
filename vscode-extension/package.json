@@ -1,0 +1,48 @@
+{
+  "name": "sql-formatter-vscode",
+  "displayName": "SQL Formatter",
+  "description": "Formats SQL against a personal, fine-grained style template (postgres/snowflake/sqlite/generic). Local-first — never sends SQL anywhere.",
+  "version": "0.1.0",
+  "private": true,
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": ["Formatters"],
+  "activationEvents": [
+    "onLanguage:sql"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "SQL Formatter",
+      "properties": {
+        "sqlFormatter.template": {
+          "type": "string",
+          "default": "default",
+          "description": "Bundled template name (\"default\", \"compact\", \"river\") or an absolute/workspace-relative path to a style-template JSON file."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "sqlFormatter.inferStyleFromSelection",
+        "title": "SQL Formatter: Infer Style From Selection"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "tsc --noEmit -p tsconfig.json && node esbuild.mjs",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@sql-formatter/core": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "@types/vscode": "^1.90.0",
+    "esbuild": "^0.28.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  }
+}
