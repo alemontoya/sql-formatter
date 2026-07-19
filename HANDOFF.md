@@ -263,11 +263,25 @@ not template-specific hacks:
   so converting *from* an existing bracket-quoted identifier isn't
   reachable — only *to* bracket style, for a previously-unquoted or
   double/backtick-quoted identifier.
-- `lists.wrapThresholdItems`, `commas.alignAfterComma`,
-  `joins.multiConditionIndent`, `booleanOperators.indentContinuation` are
-  **not attempted by `inferStyleTemplate()`** (always 0 confidence, value
-  copied from the base template passed in) — see the dated section below for
-  why each was judged too unreliable to infer from a single example.
+- `lists.wrapThresholdItems` and `commas.alignAfterComma` are **not
+  attempted by `inferStyleTemplate()`** (always 0 confidence, value copied
+  from the base template passed in). `wrapThresholdItems` is genuinely hard
+  to infer from one example — you'd need to isolate the boundary where a
+  short list stays inline but a longer one wraps, disentangled from
+  `lineWidth`-driven wrapping (a list can wrap because it's *wide*, not
+  because it hit a count), which a single script rarely has enough
+  same-width/varied-count lists to pin down. `commas.alignAfterComma` is
+  unimplemented for a different reason: it has **no printer behavior at
+  all** yet (unlike the other fields on this list, which were all
+  print-time gaps with a clear implemented target to infer *toward* —
+  inferring a value here would be inferring toward a no-op, the exact
+  anti-pattern the `wrapThresholdItems`/`onePerLine` interaction bug below
+  already warns about). ~~`joins.multiConditionIndent`,
+  `booleanOperators.indentContinuation`...~~ **Implemented** — on reflection
+  these two were genuinely inferable using techniques already proven
+  elsewhere in this file (column-delta measurement, same shape as
+  `indentation.size`'s CASE/WHEN-anchored inference); see the dated section
+  below.
 
 ## A specific bug class to remember
 
@@ -1191,3 +1205,79 @@ original casing regardless of `casing.identifiers`, and idempotency. All
 157 `core` tests pass (147 pre-existing + 10 new); 184 total across
 `core`+`cli`. Verified manually against the CLI for every combination
 above plus an idempotency round-trip.
+
+## `joins.multiConditionIndent` / `booleanOperators.indentContinuation` now inferred
+
+These two were on the "not attempted by `inferStyleTemplate()`" list,
+grouped with `wrapThresholdItems`/`alignAfterComma` under one blanket
+"judged too unreliable to infer from a single example" sentence. Asked to
+revisit specifically: unlike `wrapThresholdItems` (a genuine confounding
+problem — wrapping-by-count vs. wrapping-by-`lineWidth` can't be
+disentangled from one example) and `alignAfterComma` (not implemented in
+the printer *at all*, discovered while re-checking this — inferring toward
+a no-op), these two are fully print-time implemented (`printer.ts`, JOIN/CTE
+bug-fix section above) and turned out to be measurable with the same
+column-delta technique `indentation.size` already uses (anchored on
+CASE/WHEN nesting instead of a boolean-chain wrap).
+
+Both fields are **only ever read by the printer for one specific
+codepath**: `indentContinuation` solely for a WHERE/HAVING chain
+(`printClauseBody`'s `CONDITION_CLAUSES` branch — JOIN's `ON` always
+supplies its own explicit continuation level via `multiConditionIndent`,
+never stacked with `indentContinuation`), and `multiConditionIndent` solely
+for a JOIN's `ON` condition. Both are bypassed entirely in `keywordAlign`
+mode (the chain family-aligns to `keywordEndCol` instead). Confirmed
+against a real river-style fixture that measuring column deltas in that
+mode would produce a *misleading*, not just low-confidence, vote — the
+observed delta reflects the family column's width, unrelated to either
+field — so both new inference functions are hard-gated on the overall
+inferred `layout.mode === "indent"`, unlike `subqueryOpenParenSameLine`'s
+inference (which measures something orthogonal to layout mode and stays
+safe to compute in either).
+
+New shared `collectChainIndentDeltas()` measures, for one AND/OR chain, the
+column delta between a caller-supplied `baseCol` and each continuation that
+actually starts its own line (an inline `AND y = 2` carries no signal).
+Which token is measured depends on `booleanOperators.style` (already
+inferred): for `"leading"`, the AND/OR keyword itself starts the
+continuation line; for `"trailing"`, AND/OR glues to the *previous* line's
+end, so it's the *next* condition's first token that starts the new line.
+
+**Bug caught while testing against known-good output, not by `vitest run`**:
+the first version measured `baseCol` from the chain's own first node
+(`nodes[0]`) — correct for WHERE/HAVING, where the first condition reliably
+starts a fresh line once the chain has wrapped at all, but wrong for a
+JOIN's `ON` condition under `onClausePlacement: "sameLine"`, where the
+first condition is glued right after `"ON "` on the *table ref's* line, not
+on its own line. Measuring from it gave deltas like `-3` instead of the
+expected `+2`. Caught by round-tripping a template with a known
+`multiConditionIndent` value through `format()` then `inferStyleTemplate()`
+and checking the value came back — not by unit-testing the two functions
+in isolation, which would have "worked" against whatever (wrong) reference
+column each one happened to pick. Fixed by having each caller pass an
+explicit `baseCol`, computed as the **leading whitespace width of the line
+containing the chain's anchor token** (`clause.body[0]` for WHERE/HAVING,
+the `ON` keyword for JOIN) rather than any token's own column — robust
+under both `onClausePlacement` values, since the anchor's *line* always
+carries the true reference indent even when the anchor token itself
+doesn't start that line.
+
+`multiConditionIndent` being a level *count*, not a boolean, each clean
+delta is divided by `indentSize` and rounded, with anything more than half
+an `indentSize` off a whole multiple dropped as noise rather than rounded
+into a misleading vote.
+
+8 new tests in `infer.test.ts`: zero confidence with no multi-condition
+chain present, `indentContinuation` true/false/trailing-style variants,
+`multiConditionIndent` at 1/0/`newLine`-placement, the `keywordAlign`
+non-inference regression (a multi-condition chain *is* present, but layout
+is align-mode, so both fields must still abstain), and a round-trip test
+(format with non-default `multiConditionIndent: 2`/`indentContinuation:
+true`, infer from that output, confirm both values recover with nonzero
+confidence). All 165 `core` tests pass (157 pre-existing + 8 new — the
+pre-existing "deliberately-deferred fields" test also needed trimming down
+to just the two fields still actually deferred); 192 total across
+`core`+`cli`. Verified manually via `sql-format infer` against several
+hand-built examples covering both fields, both boolean-operator styles,
+both JOIN placements, and the `keywordAlign` gating case, before locking in
+as automated tests.

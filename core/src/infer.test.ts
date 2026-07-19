@@ -104,18 +104,73 @@ describe("inferStyleTemplate (synthetic, per-field)", () => {
 
   it("defaults deliberately-deferred fields to the base template with zero confidence", () => {
     const { template } = infer("SELECT id FROM t;");
-    for (const field of [
-      "lists.wrapThresholdItems",
-      "commas.alignAfterComma",
-      "joins.multiConditionIndent",
-      "booleanOperators.indentContinuation",
-      "alignment.aliases",
-      "alignment.assignments",
-    ]) {
+    for (const field of ["lists.wrapThresholdItems", "commas.alignAfterComma", "alignment.aliases", "alignment.assignments"]) {
       expect(template.source.confidence![field]).toBe(0);
     }
     expect(template.style.lists.wrapThresholdItems).toBe(defaultTemplate.style.lists.wrapThresholdItems);
     expect(template.style.alignment.aliases).toBe(defaultTemplate.style.alignment.aliases);
+  });
+
+  it("joins.multiConditionIndent/booleanOperators.indentContinuation get zero confidence when no multi-condition chain wraps", () => {
+    const { template } = infer("SELECT id FROM t WHERE a = 1;");
+    expect(template.source.confidence!["joins.multiConditionIndent"]).toBe(0);
+    expect(template.source.confidence!["booleanOperators.indentContinuation"]).toBe(0);
+  });
+
+  it("infers booleanOperators.indentContinuation = true from a WHERE chain indented one level past its first condition", () => {
+    const sql = ["SELECT id", "FROM t", "WHERE", "  a = 1", "    AND b = 2", "    AND c = 3;"].join("\n");
+    const { template } = infer(sql);
+    expect(template.style.booleanOperators.indentContinuation).toBe(true);
+    expect(confidenceOf(infer(sql), "booleanOperators.indentContinuation")).toBeGreaterThan(0);
+  });
+
+  it("infers booleanOperators.indentContinuation = false from a WHERE chain indented at the same level as its first condition", () => {
+    const sql = ["SELECT id", "FROM t", "WHERE", "  a = 1", "  AND b = 2", "  AND c = 3;"].join("\n");
+    const { template } = infer(sql);
+    expect(template.style.booleanOperators.indentContinuation).toBe(false);
+    expect(confidenceOf(infer(sql), "booleanOperators.indentContinuation")).toBeGreaterThan(0);
+  });
+
+  it("infers booleanOperators.indentContinuation correctly for trailing-style chains too", () => {
+    const sql = ["SELECT id", "FROM t", "WHERE", "  a = 1 AND", "    b = 2 AND", "    c = 3;"].join("\n");
+    const { template } = infer(sql);
+    expect(template.style.booleanOperators.style).toBe("trailing");
+    expect(template.style.booleanOperators.indentContinuation).toBe(true);
+  });
+
+  it("infers joins.multiConditionIndent from a JOIN...ON chain's wrapped AND indent, in indentSize units", () => {
+    const sql = ["SELECT a.id", "FROM a", "JOIN", "  b ON a.id = b.id", "    AND a.x = b.x", "    AND a.y = b.y;"].join(
+      "\n"
+    );
+    const { template } = infer(sql);
+    expect(template.style.joins.multiConditionIndent).toBe(1);
+    expect(confidenceOf(infer(sql), "joins.multiConditionIndent")).toBeGreaterThan(0);
+  });
+
+  it("infers joins.multiConditionIndent = 0 when the wrapped AND sits at the same level as the first ON condition", () => {
+    const sql = ["SELECT a.id", "FROM a", "JOIN", "  b ON a.id = b.id", "  AND a.x = b.x;"].join("\n");
+    const { template } = infer(sql);
+    expect(template.style.joins.multiConditionIndent).toBe(0);
+  });
+
+  it("does not infer joins.multiConditionIndent/booleanOperators.indentContinuation from a keywordAlign example, even with a multi-condition chain present", () => {
+    // Regression: measuring indent-mode-style column deltas against a
+    // family-aligned chain would produce a misleading vote (the delta
+    // reflects the alignment column's width, not either field) — this
+    // must stay gated to layout.mode === "indent" and abstain entirely.
+    const sql = [
+      "SELECT a.id",
+      "  FROM a",
+      "  JOIN b",
+      "    ON a.id = b.id",
+      "   AND a.x = b.x",
+      " WHERE p = 1",
+      "   AND q = 2;",
+    ].join("\n");
+    const { template } = infer(sql);
+    expect(template.style.layout.mode).toBe("keywordAlign");
+    expect(template.source.confidence!["joins.multiConditionIndent"]).toBe(0);
+    expect(template.source.confidence!["booleanOperators.indentContinuation"]).toBe(0);
   });
 
   it("marks source as inferred with a per-field confidence map", () => {
@@ -175,5 +230,30 @@ describe("inferStyleTemplate (round-trip against a known-good template)", () => 
     expect(template.style.statementTerminator.alwaysAppendSemicolon).toBe(
       riverTemplate.style.statementTerminator.alwaysAppendSemicolon
     );
+  });
+
+  it("re-infers joins.multiConditionIndent/booleanOperators.indentContinuation from indent-mode output with non-default values", () => {
+    const customTemplate: StyleTemplate = {
+      ...defaultTemplate,
+      style: {
+        ...defaultTemplate.style,
+        joins: { onClausePlacement: "sameLine", multiConditionIndent: 2 },
+        booleanOperators: { style: "leading", indentContinuation: true },
+      },
+    };
+    const sql = "select a.id from a join b on a.id = b.id and a.x = b.x and a.y = b.y where p = 1 and q = 2 and r = 3;";
+    const formatted = format(sql, customTemplate);
+    const { template } = inferStyleTemplate(formatted, {
+      id: "roundtrip2",
+      name: "Roundtrip2",
+      dialect: "generic",
+      baseTemplate: defaultTemplate,
+    });
+
+    expect(template.style.layout.mode).toBe("indent");
+    expect(template.style.joins.multiConditionIndent).toBe(2);
+    expect(template.style.booleanOperators.indentContinuation).toBe(true);
+    expect(template.source.confidence!["joins.multiConditionIndent"]).toBeGreaterThan(0);
+    expect(template.source.confidence!["booleanOperators.indentContinuation"]).toBeGreaterThan(0);
   });
 });

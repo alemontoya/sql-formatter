@@ -428,6 +428,115 @@ function inferBooleanOperatorStyle(statements: StatementInfo[], lines: SourceLin
   return chooseByVote(tally(votes), "leading");
 }
 
+/** Collects observed indent deltas (raw columns, not yet divided by
+ * `indentSize`) between `baseCol` and each wrapped AND/OR continuation in
+ * one chain (`nodes` is a WHERE/HAVING body or a JOIN's ON condition).
+ * `baseCol` must be passed in rather than measured from `nodes[0]` — for
+ * WHERE/HAVING the chain's first condition does start its own line, but
+ * for a JOIN's ON condition with `onClausePlacement: "sameLine"` it's
+ * glued right after "ON " on the *table ref's* line, so a caller-supplied
+ * reference (the leading whitespace width of whichever line actually
+ * anchors this chain) is the only reliable base in both shapes. Only
+ * continuations that actually start their own line count — an inline
+ * "AND y = 2" carries no indent signal. Which token is measured on a
+ * continuation depends on `style`: for "leading", the AND/OR keyword
+ * itself starts the line; for "trailing", AND/OR glues to the *previous*
+ * line's end, so it's the next condition's first token that starts the
+ * new line instead. Shared by `inferBooleanIndentContinuation`
+ * (WHERE/HAVING) and `inferJoinMultiConditionIndent` (JOIN...ON) below —
+ * same measurement, different clause shape and confidence-shaping after. */
+function collectChainIndentDeltas(baseCol: number, nodes: Node[], lines: SourceLines, style: "leading" | "trailing", out: number[]) {
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i];
+    if (node.kind !== "leaf" || node.leaf.token.type !== "keyword") continue;
+    const w = node.leaf.token.value.toUpperCase();
+    if (w !== "AND" && w !== "OR") continue;
+    const next = nodes[i + 1];
+    const measureLeaf = style === "leading" ? node.leaf : next ? firstLeafOf(next) : null;
+    if (!measureLeaf || !isAtLineStart(lines, measureLeaf.token.start)) continue;
+    out.push(columnAt(lines, measureLeaf.token.start) - baseCol);
+  }
+}
+
+/** `booleanOperators.indentContinuation` is only ever read by the printer
+ * for a WHERE/HAVING chain (`printClauseBody`'s `CONDITION_CLAUSES`
+ * branch) — JOIN's `ON` always supplies its own explicit continuation
+ * level (`joins.multiConditionIndent`, never stacked with this field), and
+ * `keywordAlign` mode bypasses it entirely (the chain family-aligns to
+ * `keywordEndCol` instead — see `printJoin`'s `alignMode` branch and
+ * `printChain`'s `useFamilyAlign` branch). Measuring column deltas against
+ * *that* alignment would produce misleading, not just low-confidence,
+ * votes (confirmed against a real river-style fixture: the observed delta
+ * reflects the family column's width, unrelated to `indentContinuation`),
+ * so this is gated on the overall inferred layout being `"indent"`, unlike
+ * `subqueryOpenParenSameLine`'s inference (which measures something
+ * orthogonal to layout mode and stays safe to compute either way). */
+function inferBooleanIndentContinuation(
+  statements: StatementInfo[],
+  lines: SourceLines,
+  indentSize: number,
+  layoutMode: "indent" | "keywordAlign",
+  style: "leading" | "trailing"
+): Choice<boolean> {
+  if (layoutMode !== "indent") return { value: false, confidence: 0 };
+  const deltas: number[] = [];
+  const collect = (nodes: Node[]) => {
+    for (const clause of splitClauses(nodes)) {
+      if (CONDITION_CLAUSES.has(clause.keyword) && clause.body[0]) {
+        const baseCol = leadingWidth(lines.text[lineIndexAt(lines, firstLeafOf(clause.body[0]).token.start)]);
+        collectChainIndentDeltas(baseCol, clause.body, lines, style, deltas);
+      }
+      for (const node of clause.body) {
+        if (node.kind === "group" && isSubqueryGroup(node.content)) collect(node.content);
+      }
+    }
+  };
+  for (const s of statements) collect(s.tree);
+  const votes = deltas.filter((d) => d === 0 || d === indentSize).map((d) => d === indentSize);
+  return chooseByVote(tally(votes), false);
+}
+
+/** Same gating and measurement approach as `inferBooleanIndentContinuation`
+ * above (see its doc comment), applied to a JOIN's `ON` condition instead
+ * of WHERE/HAVING. `multiConditionIndent` is a level *count*, not a
+ * boolean, so each clean delta is divided by `indentSize` and rounded
+ * rather than voted true/false; deltas that don't land near a whole
+ * multiple (more than half an `indentSize` off) are dropped as noise
+ * rather than rounded into a misleading vote. */
+function inferJoinMultiConditionIndent(
+  statements: StatementInfo[],
+  lines: SourceLines,
+  indentSize: number,
+  layoutMode: "indent" | "keywordAlign",
+  style: "leading" | "trailing",
+  fallback: number
+): Choice<number> {
+  if (layoutMode !== "indent") return { value: fallback, confidence: 0 };
+  const deltas: number[] = [];
+  const collect = (nodes: Node[]) => {
+    for (const clause of splitClauses(nodes)) {
+      if (clause.keyword.endsWith("JOIN")) {
+        const onIdx = clause.body.findIndex(
+          (n) => n.kind === "leaf" && n.leaf.token.type === "keyword" && n.leaf.token.value.toUpperCase() === "ON"
+        );
+        if (onIdx !== -1) {
+          const onLeaf = (clause.body[onIdx] as { kind: "leaf"; leaf: Leaf }).leaf;
+          const baseCol = leadingWidth(lines.text[lineIndexAt(lines, onLeaf.token.start)]);
+          collectChainIndentDeltas(baseCol, clause.body.slice(onIdx + 1), lines, style, deltas);
+        }
+      }
+      for (const node of clause.body) {
+        if (node.kind === "group" && isSubqueryGroup(node.content)) collect(node.content);
+      }
+    }
+  };
+  for (const s of statements) collect(s.tree);
+  const votes = deltas
+    .filter((d) => d >= 0 && Math.abs(d - Math.round(d / indentSize) * indentSize) <= indentSize / 2)
+    .map((d) => Math.round(d / indentSize));
+  return chooseByVote(tally(votes), fallback);
+}
+
 function inferCtes(statements: StatementInfo[], lines: SourceLines): { onePerLine: Choice<boolean>; blankLineBetween: Choice<boolean> } {
   const onePerLineVotes: boolean[] = [];
   const blankVotes: boolean[] = [];
@@ -578,6 +687,21 @@ export function inferStyleTemplate(sql: string, options: InferOptions): InferRes
   const commaStyle = inferCommaStyle(statements, lines);
   const joinOnPlacement = inferJoinOnPlacement(statements, lines);
   const booleanOperatorStyle = inferBooleanOperatorStyle(statements, lines);
+  const indentContinuation = inferBooleanIndentContinuation(
+    statements,
+    lines,
+    indentation.size.value,
+    layout.value,
+    booleanOperatorStyle.value
+  );
+  const multiConditionIndent = inferJoinMultiConditionIndent(
+    statements,
+    lines,
+    indentation.size.value,
+    layout.value,
+    booleanOperatorStyle.value,
+    options.baseTemplate.style.joins.multiConditionIndent
+  );
   const ctes = inferCtes(statements, lines);
   const subqueryParen = inferSubqueryParen(statements, lines);
   const quoting = inferQuoting(leaves);
@@ -611,8 +735,8 @@ export function inferStyleTemplate(sql: string, options: InferOptions): InferRes
       wrapThresholdItems: listsOnePerLine.value ? base.lists.wrapThresholdItems : 999,
     },
     commas: { style: commaStyle.value, alignAfterComma: base.commas.alignAfterComma },
-    joins: { onClausePlacement: joinOnPlacement.value, multiConditionIndent: base.joins.multiConditionIndent },
-    booleanOperators: { style: booleanOperatorStyle.value, indentContinuation: base.booleanOperators.indentContinuation },
+    joins: { onClausePlacement: joinOnPlacement.value, multiConditionIndent: multiConditionIndent.value },
+    booleanOperators: { style: booleanOperatorStyle.value, indentContinuation: indentContinuation.value },
     ctes: { onePerLine: ctes.onePerLine.value, blankLineBetween: ctes.blankLineBetween.value },
     parentheses: { subqueryOpenParenSameLine: subqueryParen.value },
     alignment: { aliases: base.alignment.aliases, assignments: base.alignment.assignments },
@@ -637,9 +761,9 @@ export function inferStyleTemplate(sql: string, options: InferOptions): InferRes
     "commas.style": commaStyle.confidence,
     "commas.alignAfterComma": 0,
     "joins.onClausePlacement": joinOnPlacement.confidence,
-    "joins.multiConditionIndent": 0,
+    "joins.multiConditionIndent": multiConditionIndent.confidence,
     "booleanOperators.style": booleanOperatorStyle.confidence,
-    "booleanOperators.indentContinuation": 0,
+    "booleanOperators.indentContinuation": indentContinuation.confidence,
     "ctes.onePerLine": ctes.onePerLine.confidence,
     "ctes.blankLineBetween": ctes.blankLineBetween.confidence,
     "parentheses.subqueryOpenParenSameLine": subqueryParen.confidence,
