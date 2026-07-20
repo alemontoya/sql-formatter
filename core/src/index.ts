@@ -4,4 +4,5 @@ export { inferStyleTemplate } from "./infer.js";
 export type { InferOptions, InferResult } from "./infer.js";
 export { advise } from "./advise.js";
 export type { TableStats, TableColumnStats, Suggestion, SuggestionKind, AdviseResult } from "./advise.js";
+export { STATS_QUERIES } from "./stats-queries.js";
 export type { Dialect } from "./types.js";

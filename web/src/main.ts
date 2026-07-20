@@ -1,5 +1,5 @@
 import "./style.css";
-import { format, inferStyleTemplate, advise } from "@sql-formatter/core";
+import { format, inferStyleTemplate, advise, STATS_QUERIES } from "@sql-formatter/core";
 import type { StyleTemplate, Dialect, InferResult, TableStats, Suggestion } from "@sql-formatter/core";
 import { BUNDLED_TEMPLATES } from "./templates";
 import { loadSavedTemplates, saveCustomTemplate, deleteCustomTemplate, getActiveSelection, setActiveSelection } from "./storage";
@@ -107,6 +107,20 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       <button type="button" id="advise-btn">Run advisor</button>
       <span class="template-info" id="stats-info">No stats loaded — structural checks only</span>
     </div>
+    <div class="toolbar">
+      <label>
+        Don't have stats yet? Get the query for
+        <select id="stats-queries-dialect">
+          <option value="postgres">Postgres</option>
+          <option value="snowflake">Snowflake</option>
+          <option value="sqlite">SQLite</option>
+          <option value="generic">Generic</option>
+        </select>
+      </label>
+      <button type="button" class="secondary" id="show-stats-queries-btn">Show query</button>
+      <button type="button" class="secondary" id="copy-stats-queries-btn" hidden>Copy</button>
+    </div>
+    <pre class="stats-queries-output" id="stats-queries-output" hidden></pre>
     <div class="error-banner" id="advise-error"></div>
     <div class="editor-grid">
       <div class="editor-col">
@@ -469,3 +483,31 @@ adviseBtn.addEventListener("click", () => {
 });
 
 renderStatsInfo();
+
+// ---------------------------------------------------------------------------
+// Stats-collection query helper — prints SQL for the user to run themselves
+// against their own database. This tool never runs it or connects to
+// anything; same STATS_QUERIES data the CLI's `advise stats-queries` uses.
+
+const statsQueriesDialect = document.querySelector<HTMLSelectElement>("#stats-queries-dialect")!;
+const showStatsQueriesBtn = document.querySelector<HTMLButtonElement>("#show-stats-queries-btn")!;
+const copyStatsQueriesBtn = document.querySelector<HTMLButtonElement>("#copy-stats-queries-btn")!;
+const statsQueriesOutput = document.querySelector<HTMLElement>("#stats-queries-output")!;
+
+function renderStatsQuery(): void {
+  statsQueriesOutput.textContent = STATS_QUERIES[statsQueriesDialect.value] ?? "";
+  statsQueriesOutput.hidden = false;
+  copyStatsQueriesBtn.hidden = false;
+}
+
+showStatsQueriesBtn.addEventListener("click", renderStatsQuery);
+statsQueriesDialect.addEventListener("change", () => {
+  if (!statsQueriesOutput.hidden) renderStatsQuery();
+});
+
+copyStatsQueriesBtn.addEventListener("click", async () => {
+  await navigator.clipboard.writeText(statsQueriesOutput.textContent ?? "");
+  const original = copyStatsQueriesBtn.textContent;
+  copyStatsQueriesBtn.textContent = "Copied!";
+  setTimeout(() => (copyStatsQueriesBtn.textContent = original), 1200);
+});

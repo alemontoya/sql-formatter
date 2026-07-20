@@ -78,6 +78,11 @@ text-only advice for you to judge. See the root [HANDOFF.md](../HANDOFF.md)'s
 "Query advisor built" section for the exact safety rules behind each
 suggestion kind.
 
+Don't have a stats file yet? Pick a dialect and click "Show query" to see
+the same ready-to-run SQL the CLI's `advise stats-queries` prints — copy
+it, run it yourself against your database, and paste the JSON result back
+under a `"tables"` key in a stats file you upload above.
+
 ## Development
 
 See the root [HANDOFF.md](../HANDOFF.md) — search for "Web UI built" for

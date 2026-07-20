@@ -1727,3 +1727,31 @@ console errors. All 231 `core`+`cli`+`vscode-extension` tests still pass
 (no new tests added for `web`, consistent with its existing no-test-suite
 status — the underlying `advise()` logic is already covered in `core`, this
 is just DOM wiring around it, same reasoning as the Format/Infer tabs).
+
+## `STATS_QUERIES` moved into `core`, and shown in the web UI's Advise tab
+
+User asked for the stats-collection queries directly (to try the advisor
+against a real Postgres database) and, separately, whether it was worth
+surfacing them in the web UI too — yes, and doing so exposed that the
+query text lived only in `cli/src/cli.ts` as a local `const`, duplicated
+nowhere yet but *about* to be duplicated the moment the web UI needed the
+same strings. Moved to a new `core/src/stats-queries.ts` exporting
+`STATS_QUERIES: Record<string, string>`, re-exported from `core/src/index.ts`
+alongside the rest of the public API. `cli.ts` now imports it instead of
+defining its own copy (verified `sql-format advise stats-queries` still
+prints byte-identical output after the move). This is the same "shared
+data, not shared UI" pattern already used for `templates/*.json` (imported
+by both `web/src/templates.ts` and `vscode-extension/src/templates.ts`) —
+`core` is the one place dialect-specific text/data lives, every interface
+imports from there rather than re-typing it.
+
+Web UI: a small toolbar row in the Advise panel ("Don't have stats yet?
+Get the query for [dialect] [Show query] [Copy]") reveals the selected
+dialect's query in a scrollable `<pre>` block, switches live when the
+dialect dropdown changes (only if already shown, so picking a dialect
+before ever clicking "Show query" doesn't pop anything unexpectedly), and
+has its own "Copy" button (same copy-to-clipboard pattern as the Format
+tab's "Copy output"). Verified in the Browser pane: Postgres query matches
+what the CLI prints byte-for-byte, switching to Snowflake swaps in the
+per-table template correctly, no console errors. All 231 tests still pass
+after the refactor (no logic changed, only *where* the strings live).

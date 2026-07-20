@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, globSync } from "node:fs";
-import { format, inferStyleTemplate, advise } from "@sql-formatter/core";
+import { format, inferStyleTemplate, advise, STATS_QUERIES } from "@sql-formatter/core";
 import type { StyleTemplate, Dialect, TableStats } from "@sql-formatter/core";
 
 const BUNDLED_TEMPLATES_DIR = new URL("../../templates/", import.meta.url);
@@ -230,70 +230,6 @@ function runInfer(argv: string[]): void {
     process.stderr.write(warnings.join("\n") + "\n");
   }
 }
-
-const STATS_QUERIES: Record<string, string> = {
-  postgres: `-- Run against your Postgres database, restricting the table list to the
--- ones you care about. Produces JSON matching table-stats.schema.json's
--- "tables" object directly — paste the result under a "tables" key.
-SELECT jsonb_pretty(jsonb_object_agg(t.relname, jsonb_build_object(
-  'rowCount', t.reltuples::bigint,
-  'columns', (
-    SELECT jsonb_object_agg(s.attname, jsonb_build_object(
-      'distinctCount', CASE WHEN s.n_distinct >= 0 THEN s.n_distinct::bigint
-                            ELSE (t.reltuples * -s.n_distinct)::bigint END,
-      'nullFraction', s.null_frac,
-      'indexed', EXISTS (
-        SELECT 1 FROM pg_index ix
-        JOIN pg_attribute a ON a.attrelid = ix.indrelid AND a.attnum = ANY(ix.indkey)
-        WHERE ix.indrelid = t.oid AND a.attname = s.attname
-      )
-    ))
-    FROM pg_stats s
-    WHERE s.schemaname = n.nspname AND s.tablename = t.relname
-  )
-)))
-FROM pg_class t
-JOIN pg_namespace n ON n.oid = t.relnamespace
-WHERE n.nspname = 'public' AND t.relkind = 'r'
-  AND t.relname IN ('table1', 'table2'); -- <- edit this list
-
--- Note: pg_stats is only populated by ANALYZE — run ANALYZE first (or wait
--- for autovacuum) if a table's columns don't show up.`,
-
-  sqlite: `-- SQLite has no built-in per-column cardinality/null-fraction catalog, so
--- this is a per-table template, not a single all-tables query — run it
--- once per table (replace "table1" both places) and merge the results by
--- hand into the stats file's "tables" object.
-SELECT
-  (SELECT COUNT(*) FROM table1)                         AS rowCount,
-  (SELECT COUNT(DISTINCT column1) FROM table1)           AS column1_distinctCount,
-  (SELECT COUNT(*) FROM table1 WHERE column1 IS NULL) * 1.0
-    / NULLIF((SELECT COUNT(*) FROM table1), 0)           AS column1_nullFraction;
-
--- For "indexed", check: PRAGMA index_list('table1'); PRAGMA index_info('<index_name>');`,
-
-  snowflake: `-- Snowflake doesn't expose a cheap pre-computed per-column stats catalog
--- to ordinary users the way Postgres's pg_stats does, so this is a
--- per-table template — run once per table and merge results by hand.
-SELECT
-  COUNT(*)                                                    AS rowCount,
-  COUNT(DISTINCT column1)                                     AS column1_distinctCount,
-  COUNT_IF(column1 IS NULL) / NULLIF(COUNT(*), 0)              AS column1_nullFraction
-FROM table1;
-
--- For "indexed": Snowflake has no traditional per-column indexes (clustering
--- keys are the closest analog) — you can generally leave "indexed" unset for
--- Snowflake tables; the unindexed-column check just won't fire for them.`,
-
-  generic: `-- No dialect-specific catalog assumed. The universal fallback: run one
--- query per table/column you care about and fill in the stats file by hand.
-SELECT
-  COUNT(*)                                                     AS rowCount,
-  COUNT(DISTINCT column1)                                      AS column1_distinctCount,
-  SUM(CASE WHEN column1 IS NULL THEN 1 ELSE 0 END) * 1.0
-    / NULLIF(COUNT(*), 0)                                      AS column1_nullFraction
-FROM table1;`,
-};
 
 function runAdviseStatsQueries(argv: string[]): void {
   let dialect: string | null = null;
