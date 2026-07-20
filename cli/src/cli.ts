@@ -64,8 +64,8 @@ sql-format advise stats-queries: prints SQL you can run yourself against
 your database to help populate a stats file — this tool never runs it for
 you or connects to any database itself.
 
-  --dialect <dialect>             Required. "postgres", "snowflake",
-                                  "sqlite", or "generic".
+  --dialect <dialect>             Required. "postgres", "redshift",
+                                  "snowflake", "sqlite", or "generic".
 `;
 
 interface Args {
@@ -237,7 +237,7 @@ function runAdviseStatsQueries(argv: string[]): void {
     if (argv[i] === "--dialect") dialect = argv[++i] ?? null;
   }
   if (!dialect || !STATS_QUERIES[dialect]) {
-    process.stderr.write(`sql-format advise stats-queries requires --dialect (postgres, snowflake, sqlite, generic)\n`);
+    process.stderr.write(`sql-format advise stats-queries requires --dialect (postgres, redshift, snowflake, sqlite, generic)\n`);
     process.exit(2);
   }
   process.stdout.write(STATS_QUERIES[dialect] + "\n");

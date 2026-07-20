@@ -35,6 +35,33 @@ WHERE n.nspname = 'public' AND t.relkind = 'r'
 -- Note: pg_stats is only populated by ANALYZE — run ANALYZE first (or wait
 -- for autovacuum) if a table's columns don't show up.`,
 
+  redshift: `-- Redshift is Postgres-derived but has its own quirks: real Postgres's
+-- pg_class.reltuples is less reliable here, and its int2vector/array type
+-- handling differs enough that a real-Postgres pg_index/ANY() index check
+-- fails outright. More fundamentally, Redshift has no traditional
+-- per-column indexes at all — it's columnar, with SORTKEY/DISTKEY as the
+-- table-level analog — so "indexed" is intentionally omitted below, same
+-- as the Snowflake entry.
+SELECT jsonb_pretty(jsonb_object_agg(ti."table", jsonb_build_object(
+  'rowCount', ti.tbl_rows,
+  'columns', (
+    SELECT jsonb_object_agg(s.attname, jsonb_build_object(
+      'distinctCount', CASE WHEN s.n_distinct >= 0 THEN s.n_distinct::bigint
+                            ELSE (ti.tbl_rows * -s.n_distinct)::bigint END,
+      'nullFraction', s.null_frac
+    ))
+    FROM pg_stats s
+    WHERE s.schemaname = ti.schema AND s.tablename = ti."table"
+  )
+)))
+FROM svv_table_info ti
+WHERE ti.schema = 'public'
+  AND ti."table" IN ('table1', 'table2'); -- <- edit this list
+
+-- Note: pg_stats is only populated by ANALYZE — run ANALYZE first if a
+-- table's columns don't show up. tbl_rows includes rows pending VACUUM, so
+-- treat it as approximate, not exact.`,
+
   sqlite: `-- SQLite has no built-in per-column cardinality/null-fraction catalog, so
 -- this is a per-table template, not a single all-tables query — run it
 -- once per table (replace "table1" both places) and merge the results by

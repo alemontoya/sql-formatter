@@ -1755,3 +1755,66 @@ tab's "Copy output"). Verified in the Browser pane: Postgres query matches
 what the CLI prints byte-for-byte, switching to Snowflake swaps in the
 per-table template correctly, no console errors. All 231 tests still pass
 after the refactor (no logic changed, only *where* the strings live).
+
+## Redshift added to `STATS_QUERIES`, and `TableStats.dialect` decoupled from the formatter's dialect enum
+
+User tried the Postgres stats query against a real database and hit two
+real errors in sequence, surfacing that they're actually on Redshift, not
+vanilla Postgres:
+
+1. `op ANY/ALL (array) requires array on the right side` on
+   `a.attnum = ANY(ix.indkey)` — the "postgres" entry's index-detection
+   subquery. Suggested an explicit `::int2[]` cast as a first guess.
+2. `Cannot cast type int2vector to smallint[]` — Redshift doesn't support
+   that cast at all, confirming this isn't a syntax nuance but a genuine
+   `int2vector`/array type-handling difference from real Postgres.
+
+Rather than keep patching a query written for a different engine by trial
+and error (expensive — each guess costs the user a round trip against a
+database I can't reach or test against myself), stepped back to the more
+fundamental point: **Redshift has no traditional per-column indexes at
+all** — it's columnar/MPP, with `SORTKEY`/`DISTKEY` as the real
+performance-relevant table-level concepts. Chasing "is this column
+indexed" via `pg_index` on Redshift isn't just syntactically broken, it's
+conceptually the wrong question — same situation the Snowflake entry
+already documents and handles by omitting `indexed` entirely. Applied the
+same treatment: new `redshift` entry in `core/src/stats-queries.ts` drops
+the index-detection subquery completely, uses `svv_table_info.tbl_rows`
+for row counts (Redshift-specific, more reliable there than
+`pg_class.reltuples`), and keeps `pg_stats` for distinct-count/null-
+fraction (Redshift does maintain Postgres-compatible `pg_stats`, populated
+by `ANALYZE` the same way). Explicitly **not verified against a live
+Redshift instance** — no Redshift access from this environment — the user
+is validating it directly; flagged in the query's own comment block that
+`tbl_rows` includes rows pending `VACUUM` so it's approximate.
+
+Wiring: `redshift` needed zero new dispatch logic in `cli.ts`'s
+`runAdviseStatsQueries()` — it already validates against
+`STATS_QUERIES`'s own keys rather than a separate hardcoded list, so
+adding the data was the whole change there (just updated the two help-text
+strings that spell out the dialect list for humans). Web UI: added a
+`<option>` to the Advise tab's dialect `<select>`.
+
+**Also fixed while here**: `TableStats.dialect` was typed as the same
+`Dialect` union `StyleTemplate.dialect` uses (`"generic" | "postgres" |
+"snowflake" | "sqlite"`) — a leftover from copying the pattern without
+checking whether the constraint made sense for this field. It doesn't:
+`advise()` never reads `stats.dialect` at all, it's purely a descriptive
+label for the user's own reference, and forcing someone on Redshift (or
+BigQuery, or anything else) to mislabel their stats file as `"postgres"` to
+satisfy a type that was never about *this* schema's actual needs was an
+unnecessary constraint bleeding over from a separate, deliberately-locked
+decision (the *formatter's* 3-dialect scope, decided early and specifically
+trimmed down at the user's request — see the top of this file). Changed to
+plain `dialect: string` in `advise.ts` and dropped the `enum` from
+`schema/table-stats.schema.json`'s `dialect` property to match. This is
+the general lesson: reusing a type because it's convenient isn't the same
+as the constraint actually applying to the new use — check whether a
+shared type's *reason for existing* still holds before reusing it.
+
+Verified: `sql-format advise stats-queries --dialect redshift` prints the
+new query; same content confirmed live in the web UI's Advise tab dialect
+picker, including switching between dialects. `redshift` added to
+`cli.test.ts`'s dialect-coverage loop. All 231 tests still pass; `core` and
+`cli` both typecheck clean after the `TableStats.dialect` type change (no
+call site anywhere actually depended on it being the narrower union).

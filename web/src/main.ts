@@ -112,6 +112,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         Don't have stats yet? Get the query for
         <select id="stats-queries-dialect">
           <option value="postgres">Postgres</option>
+          <option value="redshift">Redshift</option>
           <option value="snowflake">Snowflake</option>
           <option value="sqlite">SQLite</option>
           <option value="generic">Generic</option>

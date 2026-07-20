@@ -325,7 +325,7 @@ describe("sql-format advise stats-queries", () => {
   it(
     "prints dialect-specific SQL for each supported dialect",
     () => {
-      for (const dialect of ["postgres", "snowflake", "sqlite", "generic"]) {
+      for (const dialect of ["postgres", "redshift", "snowflake", "sqlite", "generic"]) {
         const { stdout, status } = runCli(["advise", "stats-queries", "--dialect", dialect]);
         expect(status).toBe(0);
         expect(stdout.length).toBeGreaterThan(0);

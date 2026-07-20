@@ -14,7 +14,7 @@
     },
     "dialect": {
       "type": "string",
-      "enum": ["generic", "postgres", "snowflake", "sqlite"]
+      "description": "Free-form label for where these stats came from (e.g. \"postgres\", \"redshift\", \"snowflake-prod\") — purely descriptive, the advisor never branches on it. Not constrained to the style-template schema's dialect enum, which is a separate, narrower decision about which dialects the formatter itself targets."
     },
     "collectedAt": {
       "type": "string",

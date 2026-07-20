@@ -5,7 +5,6 @@ import { splitClauses, type Clause } from "./clauses.js";
 import { isKeywordLeaf, isSubqueryGroup, splitTopLevelCommas } from "./printer.js";
 import { format } from "./format.js";
 import type { StyleTemplate } from "./style-template.js";
-import type { Dialect } from "./types.js";
 
 export interface TableColumnStats {
   distinctCount?: number;
@@ -15,7 +14,12 @@ export interface TableColumnStats {
 
 export interface TableStats {
   id: string;
-  dialect: Dialect;
+  /** Free-form label for where these stats came from (e.g. "postgres",
+   * "redshift", "snowflake-prod"). Purely descriptive — advise() never
+   * branches on it — so deliberately not constrained to StyleTemplate's
+   * Dialect union, which is a separately locked-in, narrower decision
+   * about which dialects the *formatter* targets. */
+  dialect: string;
   collectedAt: string;
   tables: Record<string, { rowCount: number; columns?: Record<string, TableColumnStats> }>;
 }
