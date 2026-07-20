@@ -20,6 +20,11 @@ npm run dev -w web
 
 Then open the printed local URL (default `http://localhost:5173`).
 
+On Windows, `start-web-ui.bat` (repo root) does this in one double-click —
+builds `core` if it hasn't been built yet, starts the dev server, and opens
+your default browser to it automatically. Close its console window to stop
+the server.
+
 ## Build
 
 ```
