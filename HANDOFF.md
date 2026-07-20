@@ -1818,3 +1818,83 @@ picker, including switching between dialects. `redshift` added to
 `cli.test.ts`'s dialect-coverage loop. All 231 tests still pass; `core` and
 `cli` both typecheck clean after the `TableStats.dialect` type change (no
 call site anywhere actually depended on it being the narrower union).
+
+## `quoting.quoteAliases` field + new bundled `river-quoted` template
+
+`sql-format infer` came back low-confidence on every field against a real
+example the user provided by hand:
+
+```
+SELECT "column1_name" AS column1_name,
+       "column2_name" AS column2_name,
+       "columnx_name" AS columnx_name
+  FROM "table_name"
+;
+```
+
+Rather than keep pushing the inference engine (low confidence on *every*
+field, not just a borderline one, meant this wasn't a tuning problem — the
+example is short/generic enough that the structural signals inference
+relies on just aren't there), built the template by hand instead: it's
+almost exactly `templates/river.json` (keyword-alignment, so `SELECT`/
+`FROM` share an end-column) plus `quoting.forceQuoteIdentifiers: true` /
+`quoteChar: "double"` and `lists.onePerLine: true` (the example always
+breaks one column per line, not conditionally on `lineWidth`).
+
+**Building it surfaced a real schema gap**: the example quotes source
+references (`"column1_name"`) but leaves aliases bare (`AS column1_name`,
+not `AS "column1_name"`) — a distinction `forceQuoteIdentifiers` can't
+express, since it quotes every identifier uniformly regardless of role.
+User asked for real support rather than accepting the closest-achievable
+approximation. Added `quoting.quoteAliases: boolean` (new required field,
+same "required + update all bundled templates" convention every prior
+quoting field followed):
+
+- `renderLeafText()` (`printer.ts`) now takes an `isAlias` flag; when
+  `quoteAliases` is false and `isAlias` is true, the identifier is
+  entirely exempt from quoting — neither force-quoted if bare, nor
+  quote-character-converted if already quoted. Casing is deliberately
+  untouched by this flag (the user only asked about quoting; widening the
+  change to also affect `casing.identifiers` would be scope creep beyond
+  what was requested).
+- `isAlias` is computed at the single call site in `printSeq()`:
+  `isKeywordLeaf(nodes[idx - 1], "AS")` — true only for an identifier
+  directly following an explicit `AS`. **Deliberately does not detect
+  implicit no-AS aliases** (`SELECT expr alias_name`, or a bare table
+  alias like `FROM users u`) — disambiguating "this bare identifier is an
+  alias" from "this bare identifier is something else" without an `AS`
+  anchor is a genuinely harder, riskier problem than what was actually
+  asked for, so it's out of scope and documented as such rather than
+  guessed at. A no-AS table alias like `u` above still gets force-quoted
+  like any other identifier — confirmed via a dedicated test asserting
+  exactly that boundary.
+- `infer.ts` doesn't attempt to infer `quoteAliases` (0 confidence,
+  copied from the base template) — same treatment as `alignment.aliases`/
+  `alignment.assignments`, fields with no source-position signal to read.
+
+New bundled template `templates/river-quoted.json` (`id:
+"river-quoted"`) wires this in: river.json's keyword-alignment style +
+forced double-quoting + `quoteAliases: false` + `lists.onePerLine: true`.
+Bundled as a fourth first-class template everywhere the other three are:
+CLI (`resolveTemplatePath()` needed **zero changes** — it already resolves
+any file in `templates/` by name via the bundled-name regex, so
+`--template river-quoted` just worked once the file existed), `web/src/templates.ts`
+and `vscode-extension/src/templates.ts` (both gained a `"river-quoted"`
+entry, same DRY JSON-import pattern as the other three), web UI's Format
+tab and Infer tab's "Fallback base" `<select>`s gained an option, and
+`vscode-extension/package.json`'s `sqlFormatter.template` setting
+description was updated to list it.
+
+Verified end-to-end: `sql-format --template river-quoted` on a
+hand-built example reproduces the user's exact formatting byte-for-byte
+(except the trailing `;` placement — the user's example put it on its own
+line, which isn't expressible by `statementTerminator` today; flagged as a
+known, separate, unaddressed gap, not silently glossed over). Same
+byte-for-byte match confirmed live in the web UI's Browser pane after
+selecting the new dropdown option. 5 new `format.test.ts` tests cover the
+new `quoteAliases` field (bare alias exemption, already-quoted alias
+exemption, default-true backward compatibility, the implicit-alias
+non-exemption boundary, idempotency); one new assertion added to
+`vscode-extension`'s existing `resolveTemplate.test.ts` bundled-names
+test. 236 tests total across `core`+`cli`+`vscode-extension`, all
+passing; all four workspaces build clean.

@@ -41,6 +41,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <option value="default">Default</option>
           <option value="compact">Compact</option>
           <option value="river">River</option>
+          <option value="river-quoted">River (quoted identifiers)</option>
           <optgroup label="Saved" id="saved-optgroup"></optgroup>
         </select>
       </label>
@@ -80,6 +81,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <option value="default">Default</option>
           <option value="compact">Compact</option>
           <option value="river">River</option>
+          <option value="river-quoted">River (quoted identifiers)</option>
         </select>
       </label>
       <button type="button" id="infer-btn">Infer style</button>

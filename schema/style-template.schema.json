@@ -231,7 +231,7 @@
         },
         "quoting": {
           "type": "object",
-          "required": ["forceQuoteIdentifiers", "quoteChar"],
+          "required": ["forceQuoteIdentifiers", "quoteChar", "quoteAliases"],
           "additionalProperties": false,
           "properties": {
             "forceQuoteIdentifiers": {
@@ -242,6 +242,10 @@
               "type": "string",
               "enum": ["double", "backtick", "bracket", "none"],
               "description": "Quote style for identifiers. \"none\" leaves existing quoting untouched."
+            },
+            "quoteAliases": {
+              "type": "boolean",
+              "description": "Whether forceQuoteIdentifiers/quoteChar also apply to an identifier directly after AS. false leaves aliases exactly as written, regardless of the other two settings — for a style that quotes source column/table references but leaves aliases bare."
             }
           }
         },

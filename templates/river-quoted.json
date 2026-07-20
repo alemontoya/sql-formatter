@@ -1,7 +1,7 @@
 {
-  "id": "river",
-  "name": "River",
-  "description": "Keyword-alignment (\"river\") style: clause keywords (SELECT/FROM/WHERE/JOIN/ON/AND/GROUP BY/...) right-pad their first word to a shared column per statement/subquery scope, with CTE names and subquery content starting at that same column.",
+  "id": "river-quoted",
+  "name": "River (quoted identifiers)",
+  "description": "Same keyword-alignment (\"river\") style as river.json, but every identifier is forced double-quoted — matches a source style where every column/table reference is quoted verbatim.",
   "version": "1.0.0",
   "schemaVersion": "1.0.0",
   "dialect": "generic",
@@ -29,8 +29,8 @@
       "inlineShortStatements": false
     },
     "lists": {
-      "onePerLine": false,
-      "wrapThresholdItems": 999
+      "onePerLine": true,
+      "wrapThresholdItems": 1
     },
     "commas": {
       "style": "trailing",
@@ -56,9 +56,9 @@
       "assignments": false
     },
     "quoting": {
-      "forceQuoteIdentifiers": false,
-      "quoteChar": "none",
-      "quoteAliases": true
+      "forceQuoteIdentifiers": true,
+      "quoteChar": "double",
+      "quoteAliases": false
     },
     "blankLines": {
       "betweenStatements": "collapseToOne",

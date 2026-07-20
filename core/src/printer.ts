@@ -161,9 +161,20 @@ function unquoteIdentifier(raw: string): string {
   return raw;
 }
 
-function renderLeafText(leaf: Leaf, kind: "keyword" | "function" | "type" | "identifier" | "raw", ctx: Ctx): string {
+function renderLeafText(
+  leaf: Leaf,
+  kind: "keyword" | "function" | "type" | "identifier" | "raw",
+  ctx: Ctx,
+  isAlias: boolean,
+): string {
   const { token } = leaf;
   const quoteChar = ctx.style.quoting.quoteChar;
+  // An alias identifier (directly after AS) is exempt from quoting rules
+  // entirely when quoteAliases is false — neither force-quoted if bare, nor
+  // quote-character-converted if already quoted. Casing is deliberately
+  // untouched by this flag; only quoting cares about the alias/reference
+  // distinction, since that's the only thing the user asked to differ.
+  const quotingAppliesHere = ctx.style.quoting.quoteAliases || !isAlias;
   switch (kind) {
     case "keyword":
       return applyCasing(token.value, ctx.style.casing.keywords);
@@ -173,14 +184,16 @@ function renderLeafText(leaf: Leaf, kind: "keyword" | "function" | "type" | "ide
       return applyCasing(token.value, ctx.style.casing.types);
     case "identifier": {
       const cased = applyCasing(token.value, ctx.style.casing.identifiers);
-      return ctx.style.quoting.forceQuoteIdentifiers && quoteChar !== "none" ? quoteIdentifier(cased, quoteChar) : cased;
+      return ctx.style.quoting.forceQuoteIdentifiers && quoteChar !== "none" && quotingAppliesHere
+        ? quoteIdentifier(cased, quoteChar)
+        : cased;
     }
     default:
       // Covers already-quoted identifiers (token.type === "quotedIdentifier")
       // among other non-identifier/keyword tokens. Quoted identifiers are
       // case-sensitive in SQL, so casing.identifiers deliberately never
       // applies here — only the quote *character* is converted.
-      if (token.type === "quotedIdentifier" && quoteChar !== "none") {
+      if (token.type === "quotedIdentifier" && quoteChar !== "none" && quotingAppliesHere) {
         return quoteIdentifier(unquoteIdentifier(token.value), quoteChar);
       }
       return token.value;
@@ -332,7 +345,8 @@ function printSeq(nodes: Node[], level: number, ctx: Ctx, bodyStartsAtTableRef =
     }
 
     const kind = classifyLeaf(nodes, idx, bodyStartsAtTableRef);
-    const text = renderLeafText(node.leaf, kind, ctx);
+    const isAlias = isKeywordLeaf(nodes[idx - 1], "AS");
+    const text = renderLeafText(node.leaf, kind, ctx, isAlias);
     if (isIndexBracket(nodes, idx)) {
       b.text(text, true);
     } else {

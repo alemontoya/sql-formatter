@@ -25,7 +25,7 @@
         "sqlFormatter.template": {
           "type": "string",
           "default": "default",
-          "description": "Bundled template name (\"default\", \"compact\", \"river\") or an absolute/workspace-relative path to a style-template JSON file."
+          "description": "Bundled template name (\"default\", \"compact\", \"river\", \"river-quoted\") or an absolute/workspace-relative path to a style-template JSON file."
         }
       }
     },

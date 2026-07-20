@@ -261,8 +261,15 @@ describe("format (comments around a statement-terminating semicolon)", () => {
 });
 
 describe("format (quoting.forceQuoteIdentifiers / quoting.quoteChar)", () => {
-  function withQuoting(forceQuoteIdentifiers: boolean, quoteChar: "double" | "backtick" | "bracket" | "none"): StyleTemplate {
-    return { ...defaultTemplate, style: { ...defaultTemplate.style, quoting: { forceQuoteIdentifiers, quoteChar } } };
+  function withQuoting(
+    forceQuoteIdentifiers: boolean,
+    quoteChar: "double" | "backtick" | "bracket" | "none",
+    quoteAliases = true,
+  ): StyleTemplate {
+    return {
+      ...defaultTemplate,
+      style: { ...defaultTemplate.style, quoting: { forceQuoteIdentifiers, quoteChar, quoteAliases } },
+    };
   }
 
   it("forceQuoteIdentifiers: false, quoteChar: none (default) leaves identifiers untouched", () => {
@@ -332,7 +339,7 @@ describe("format (quoting.forceQuoteIdentifiers / quoting.quoteChar)", () => {
       style: {
         ...defaultTemplate.style,
         casing: { ...defaultTemplate.style.casing, identifiers: "upper" },
-        quoting: { forceQuoteIdentifiers: false, quoteChar: "none" },
+        quoting: { forceQuoteIdentifiers: false, quoteChar: "none", quoteAliases: true },
       },
     };
     const sql = 'select "myCol" from t;';
@@ -345,6 +352,42 @@ describe("format (quoting.forceQuoteIdentifiers / quoting.quoteChar)", () => {
     const sql = "select id, user_name from users where id = 1;";
     const once = format(sql, withQuoting(true, "double"));
     const twice = format(once, withQuoting(true, "double"));
+    expect(twice).toBe(once);
+  });
+
+  it("quoteAliases: false leaves a bare alias unquoted while force-quoting the source reference", () => {
+    const sql = "select user_name as user_name from users;";
+    const out = format(sql, withQuoting(true, "double", false));
+    expect(out).toContain('"user_name" AS user_name');
+    expect(out).not.toContain('AS "user_name"');
+  });
+
+  it("quoteAliases: false leaves an already-quoted alias's quote character untouched", () => {
+    const sql = 'select user_name as "user_name" from users;';
+    const out = format(sql, withQuoting(false, "backtick", false));
+    expect(out).toContain('AS "user_name"');
+    expect(out).not.toContain("AS `user_name`");
+  });
+
+  it("quoteAliases: true (default) quotes aliases the same as any other identifier", () => {
+    const sql = "select user_name as user_name from users;";
+    const out = format(sql, withQuoting(true, "double", true));
+    expect(out).toContain('AS "user_name"');
+  });
+
+  it("quoteAliases: false does not exempt an implicit (no-AS) alias", () => {
+    const sql = "select u.id from users u;";
+    const out = format(sql, withQuoting(true, "double", false));
+    // "u" here isn't preceded by AS, so quoteAliases doesn't apply to it —
+    // it's still just a plain identifier, force-quoted like any other.
+    // Detecting implicit no-AS aliases is deliberately out of scope.
+    expect(out).toContain('FROM "users" "u"');
+  });
+
+  it("is idempotent with quoteAliases: false", () => {
+    const sql = "select user_name as user_name from users;";
+    const once = format(sql, withQuoting(true, "double", false));
+    const twice = format(once, withQuoting(true, "double", false));
     expect(twice).toBe(once);
   });
 });

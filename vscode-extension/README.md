@@ -42,8 +42,9 @@ time, no dependency needs to ship in the `.vsix` at all.
 ## Settings
 
 `sqlFormatter.template` (string, default `"default"`) — one of the bundled
-template names (`"default"`, `"compact"`, `"river"`), or an absolute /
-workspace-relative path to your own style-template JSON file (see
+template names (`"default"`, `"compact"`, `"river"`, `"river-quoted"`), or
+an absolute / workspace-relative path to your own style-template JSON file
+(see
 `schema/style-template.schema.json` at the repo root). Set it per-workspace
 in `.vscode/settings.json` if different projects want different styles.
 

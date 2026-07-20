@@ -30,6 +30,11 @@ export interface StyleTemplate {
     quoting: {
       forceQuoteIdentifiers: boolean;
       quoteChar: "double" | "backtick" | "bracket" | "none";
+      /** Whether quoting rules (forceQuoteIdentifiers and quote-character
+       * conversion) also apply to an identifier directly after AS. false
+       * leaves aliases exactly as written — useful for a style that quotes
+       * source column/table references but leaves aliases bare. */
+      quoteAliases: boolean;
     };
     blankLines: { betweenStatements: "preserve" | "collapseToOne" | "none"; aroundCtes: boolean };
     statementTerminator: { alwaysAppendSemicolon: boolean };

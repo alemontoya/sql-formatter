@@ -57,7 +57,8 @@
     },
     "quoting": {
       "forceQuoteIdentifiers": false,
-      "quoteChar": "none"
+      "quoteChar": "none",
+      "quoteAliases": true
     },
     "blankLines": {
       "betweenStatements": "collapseToOne",

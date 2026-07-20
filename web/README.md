@@ -42,9 +42,10 @@ against" section for why.
 **Format tab** — paste SQL on the left, get formatted output on the right,
 live as you type. Pick a template from the dropdown:
 
-- `Default` / `Compact` / `River` — the same bundled templates the CLI
-  ships (`templates/*.json` at the repo root; the web app imports them
-  directly, so it's always in sync with the CLI's bundled set).
+- `Default` / `Compact` / `River` / `River (quoted identifiers)` — the
+  same bundled templates the CLI ships (`templates/*.json` at the repo
+  root; the web app imports them directly, so it's always in sync with the
+  CLI's bundled set).
 - `Custom` — upload your own style-template JSON (see
   `schema/style-template.schema.json`), or apply one produced by the Infer
   tab below. Custom templates are saved to `localStorage` (up to 20, most

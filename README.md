@@ -89,6 +89,9 @@ sql-format --template compact query.sql
 # a river-style (keyword-alignment) template
 sql-format --template templates/river.json query.sql
 
+# river-style + every identifier double-quoted, but aliases left bare
+sql-format --template river-quoted query.sql
+
 # your own style-template JSON file (see schema/style-template.schema.json)
 sql-format --template ./my-style.json query.sql
 ```
@@ -153,8 +156,9 @@ sql-format infer <example-file> --id <id> --name <name> [options]
 sql-format advise <file> [--stats <stats.json>] [options]
 sql-format advise stats-queries --dialect <dialect>
 
--t, --template <name|path>   "default" or "compact" (bundled), or a path
-                              to a style-template JSON file.
+-t, --template <name|path>   "default", "compact", "river", or
+                              "river-quoted" (bundled), or a path to a
+                              style-template JSON file.
 -w, --write                  Overwrite the input file(s) in place.
 -c, --check                  Exit 1 if any input isn't already formatted;
                               no stdout output.
@@ -186,8 +190,9 @@ integration is just pointing it at the built CLI; no separate plugin needed
    /absolute/path/to/node /absolute/path/to/sql-formatter/cli/dist/index.js ${file} --write --template default
    ```
 
-   Swap `--template default` for `compact`, `river`, or a path to your own
-   style-template JSON. Find your `node` path with `which node`.
+   Swap `--template default` for `compact`, `river`, `river-quoted`, or a
+   path to your own style-template JSON. Find your `node` path with
+   `which node`.
 6. Set a reasonable **Exec timeout** (2000ms is enough for realistic
    scripts).
 

@@ -740,7 +740,11 @@ export function inferStyleTemplate(sql: string, options: InferOptions): InferRes
     ctes: { onePerLine: ctes.onePerLine.value, blankLineBetween: ctes.blankLineBetween.value },
     parentheses: { subqueryOpenParenSameLine: subqueryParen.value },
     alignment: { aliases: base.alignment.aliases, assignments: base.alignment.assignments },
-    quoting: { forceQuoteIdentifiers: quoting.forceQuoteIdentifiers.value, quoteChar: quoting.quoteChar.value },
+    quoting: {
+      forceQuoteIdentifiers: quoting.forceQuoteIdentifiers.value,
+      quoteChar: quoting.quoteChar.value,
+      quoteAliases: base.quoting.quoteAliases,
+    },
     blankLines: { betweenStatements: blankLinesBetweenStatements.value, aroundCtes: blankLinesAroundCtes.value },
     statementTerminator: { alwaysAppendSemicolon: alwaysAppendSemicolon.value },
   };
@@ -771,6 +775,7 @@ export function inferStyleTemplate(sql: string, options: InferOptions): InferRes
     "alignment.assignments": 0,
     "quoting.forceQuoteIdentifiers": quoting.forceQuoteIdentifiers.confidence,
     "quoting.quoteChar": quoting.quoteChar.confidence,
+    "quoting.quoteAliases": 0,
     "blankLines.betweenStatements": blankLinesBetweenStatements.confidence,
     "blankLines.aroundCtes": blankLinesAroundCtes.confidence,
     "statementTerminator.alwaysAppendSemicolon": alwaysAppendSemicolon.confidence,

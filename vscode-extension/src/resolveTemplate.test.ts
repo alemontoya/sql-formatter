@@ -15,6 +15,7 @@ describe("resolveTemplate", () => {
     expect(resolveTemplate("default", undefined)).toBe(BUNDLED_TEMPLATES.default);
     expect(resolveTemplate("compact", undefined)).toBe(BUNDLED_TEMPLATES.compact);
     expect(resolveTemplate("river", undefined)).toBe(BUNDLED_TEMPLATES.river);
+    expect(resolveTemplate("river-quoted", undefined)).toBe(BUNDLED_TEMPLATES["river-quoted"]);
   });
 
   it("defaults an empty/whitespace setting to the default template", () => {
