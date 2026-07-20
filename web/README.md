@@ -5,7 +5,7 @@ your browser — SQL text is never sent anywhere, there's no backend, and
 formatting happens as plain in-browser JS against `@sql-formatter/core`.
 
 Built with Vite + vanilla TypeScript. No framework: this is one page with
-two tabs, not enough complexity to justify one.
+three tabs, not enough complexity to justify one.
 
 ## Run it
 
@@ -63,6 +63,20 @@ are listed as warnings below the output — review those by hand. Click "Use
 this template" to apply the result to the Format tab and immediately see
 your own example reformatted through the template just inferred from it —
 the fastest way to check the inference actually captured your style.
+
+**Advise tab** — heuristic query suggestions, the same engine behind
+`sql-format advise` on the CLI. **Not a query optimizer and never connects
+to a database** — paste SQL, optionally upload a table-stats JSON file (see
+`schema/table-stats.schema.json`), and click "Run advisor". Without stats,
+only structural checks run (spotting an identical subquery repeated in a
+FROM/JOIN chain, suggested as a CTE extraction). With stats, it also flags
+join chains that could plausibly be reordered smallest-table-first and
+columns your stats mark as not indexed that show up in a JOIN/WHERE. A
+suggestion only comes with a rendered preview when the rewrite is
+mechanically provable as equivalent to the original — everything else is
+text-only advice for you to judge. See the root [HANDOFF.md](../HANDOFF.md)'s
+"Query advisor built" section for the exact safety rules behind each
+suggestion kind.
 
 ## Development
 

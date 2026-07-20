@@ -295,3 +295,62 @@ pre.output {
 .confidence-low {
   color: var(--error);
 }
+
+.advise-results {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.75rem;
+  background: var(--editor-bg);
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.advise-empty {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.suggestion {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.6rem 0.75rem;
+  background: var(--panel);
+}
+
+.suggestion .kind {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  background: var(--accent);
+  color: var(--accent-text);
+  border-radius: 3px;
+  padding: 0.1rem 0.4rem;
+  margin-right: 0.4rem;
+}
+
+.suggestion .stmt-index {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.suggestion .message {
+  margin: 0.4rem 0 0;
+  color: var(--text);
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.suggestion pre {
+  margin: 0.5rem 0 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  overflow-x: auto;
+}

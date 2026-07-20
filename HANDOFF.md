@@ -1696,3 +1696,34 @@ subqueries outside of CTEs; any actual cost model (selectivity, index
 usage in the plan, join algorithm choice) — the join-order heuristic is
 explicitly "small tables first by row count," nothing more, and says so in
 its own suggestion text every time it fires.
+
+## Advisor wired into the web UI (third tab: "Advise")
+
+Straightforward port of the CLI's `advise` subcommand onto the same
+pattern the Format/Infer tabs already established: paste SQL on the left,
+optionally upload a table-stats JSON file (same upload-a-JSON-file pattern
+as custom style templates, validated by checking for a `tables` key rather
+than the full schema), click "Run advisor," and each suggestion renders as
+a card (kind badge, statement number, message, and a `<pre>` preview block
+only when one exists) in `web/src/main.ts`'s `renderSuggestions()`. Reuses
+the Format tab's `activeTemplate` for rendering previews, so a preview
+reflects whichever style the user is currently working in rather than
+always defaulting to `default`. No new dependency, no server call — same
+`advise()` from `@sql-formatter/core` running in-browser as everything
+else here. New CSS block in `style.css` (`.advise-results`/`.suggestion`)
+styled to match the existing card/panel language rather than reusing the
+`pre.output` monospace-block styling, since suggestions need mixed
+prose+code layout, not a single text blob.
+
+Verified manually via the Browser pane: duplicate-subquery-CTE suggestion
+fires correctly with no stats loaded; uploading a stats file (simulated via
+a `DataTransfer`-constructed `File` + dispatched `change` event, since
+there's no real file picker to drive in an automated browser) correctly
+updates the stats-info line and unlocks join-order/unindexed-column
+suggestions on the same JOIN example already covered by the CLI/core test
+suites; "Clear stats" correctly reverts to structural-only; empty-input
+error path confirmed via the same error-banner pattern used elsewhere. No
+console errors. All 231 `core`+`cli`+`vscode-extension` tests still pass
+(no new tests added for `web`, consistent with its existing no-test-suite
+status — the underlying `advise()` logic is already covered in `core`, this
+is just DOM wiring around it, same reasoning as the Format/Infer tabs).

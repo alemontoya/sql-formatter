@@ -1,6 +1,6 @@
 import "./style.css";
-import { format, inferStyleTemplate } from "@sql-formatter/core";
-import type { StyleTemplate, Dialect, InferResult } from "@sql-formatter/core";
+import { format, inferStyleTemplate, advise } from "@sql-formatter/core";
+import type { StyleTemplate, Dialect, InferResult, TableStats, Suggestion } from "@sql-formatter/core";
 import { BUNDLED_TEMPLATES } from "./templates";
 import { loadSavedTemplates, saveCustomTemplate, deleteCustomTemplate, getActiveSelection, setActiveSelection } from "./storage";
 
@@ -30,6 +30,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   <div class="tabs">
     <button class="tab active" data-tab="format" type="button">Format</button>
     <button class="tab" data-tab="infer" type="button">Infer style from example</button>
+    <button class="tab" data-tab="advise" type="button">Advise</button>
   </div>
 
   <section class="panel active" id="panel-format">
@@ -97,6 +98,27 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
     </div>
     <div class="warnings" id="infer-warnings"></div>
   </section>
+
+  <section class="panel" id="panel-advise">
+    <div class="toolbar">
+      <input type="file" id="stats-file" accept="application/json,.json" hidden />
+      <button type="button" class="secondary" id="upload-stats-btn">Upload table stats…</button>
+      <button type="button" class="secondary" id="clear-stats-btn" hidden>Clear stats</button>
+      <button type="button" id="advise-btn">Run advisor</button>
+      <span class="template-info" id="stats-info">No stats loaded — structural checks only</span>
+    </div>
+    <div class="error-banner" id="advise-error"></div>
+    <div class="editor-grid">
+      <div class="editor-col">
+        <div class="col-header">SQL to analyze</div>
+        <textarea id="advise-input" spellcheck="false" placeholder="Paste SQL to analyze…"></textarea>
+      </div>
+      <div class="editor-col">
+        <div class="col-header">Suggestions</div>
+        <div class="advise-results" id="advise-output"></div>
+      </div>
+    </div>
+  </section>
 `;
 
 // ---------------------------------------------------------------------------
@@ -124,6 +146,7 @@ const tabs = document.querySelectorAll<HTMLButtonElement>(".tab");
 const panels = {
   format: document.querySelector<HTMLElement>("#panel-format")!,
   infer: document.querySelector<HTMLElement>("#panel-infer")!,
+  advise: document.querySelector<HTMLElement>("#panel-advise")!,
 };
 
 tabs.forEach((tab) => {
@@ -351,3 +374,98 @@ useTemplateBtn.addEventListener("click", () => {
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 }
+
+// ---------------------------------------------------------------------------
+// Advise panel — heuristic query advisor, not a query optimizer. Runs
+// entirely client-side against @sql-formatter/core, same as everything
+// else here: no server, no database connection, ever.
+
+const adviseInput = document.querySelector<HTMLTextAreaElement>("#advise-input")!;
+const adviseOutput = document.querySelector<HTMLElement>("#advise-output")!;
+const adviseError = document.querySelector<HTMLElement>("#advise-error")!;
+const adviseBtn = document.querySelector<HTMLButtonElement>("#advise-btn")!;
+const uploadStatsBtn = document.querySelector<HTMLButtonElement>("#upload-stats-btn")!;
+const statsFileInput = document.querySelector<HTMLInputElement>("#stats-file")!;
+const clearStatsBtn = document.querySelector<HTMLButtonElement>("#clear-stats-btn")!;
+const statsInfo = document.querySelector<HTMLElement>("#stats-info")!;
+
+let loadedStats: TableStats | null = null;
+
+function showAdviseError(message: string | null): void {
+  if (message) {
+    adviseError.textContent = message;
+    adviseError.classList.add("visible");
+  } else {
+    adviseError.textContent = "";
+    adviseError.classList.remove("visible");
+  }
+}
+
+function renderStatsInfo(): void {
+  if (!loadedStats) {
+    statsInfo.textContent = "No stats loaded — structural checks only";
+    clearStatsBtn.hidden = true;
+    return;
+  }
+  const tableCount = Object.keys(loadedStats.tables ?? {}).length;
+  statsInfo.textContent = `${loadedStats.id} · ${loadedStats.dialect} · ${tableCount} table${tableCount === 1 ? "" : "s"}`;
+  clearStatsBtn.hidden = false;
+}
+
+function renderSuggestions(suggestions: Suggestion[]): void {
+  if (suggestions.length === 0) {
+    adviseOutput.innerHTML = `<p class="advise-empty">No suggestions${
+      loadedStats ? "" : " — structural checks only. Upload table stats to also check join order and indexing."
+    }</p>`;
+    return;
+  }
+  adviseOutput.innerHTML = suggestions
+    .map(
+      (s) => `
+        <div class="suggestion">
+          <span class="kind">${escapeHtml(s.kind)}</span>
+          <span class="stmt-index">statement ${s.statementIndex + 1}</span>
+          <p class="message">${escapeHtml(s.message)}</p>
+          ${s.preview ? `<pre>${escapeHtml(s.preview)}</pre>` : ""}
+        </div>`,
+    )
+    .join("");
+}
+
+uploadStatsBtn.addEventListener("click", () => statsFileInput.click());
+
+statsFileInput.addEventListener("change", async () => {
+  const file = statsFileInput.files?.[0];
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const parsed = JSON.parse(text) as TableStats;
+    if (!parsed?.tables) throw new Error("Not a valid table-stats file (missing `tables`).");
+    loadedStats = parsed;
+    renderStatsInfo();
+    showAdviseError(null);
+  } catch (err) {
+    showAdviseError(`Couldn't load stats: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    statsFileInput.value = "";
+  }
+});
+
+clearStatsBtn.addEventListener("click", () => {
+  loadedStats = null;
+  renderStatsInfo();
+});
+
+adviseBtn.addEventListener("click", () => {
+  const sql = adviseInput.value;
+  if (!sql.trim()) return showAdviseError("Paste some SQL to analyze first.");
+  try {
+    const result = advise(sql, loadedStats, activeTemplate);
+    renderSuggestions(result.suggestions);
+    showAdviseError(null);
+  } catch (err) {
+    showAdviseError(err instanceof Error ? err.message : String(err));
+  }
+});
+
+renderStatsInfo();
