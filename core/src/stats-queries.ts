@@ -35,32 +35,33 @@ WHERE n.nspname = 'public' AND t.relkind = 'r'
 -- Note: pg_stats is only populated by ANALYZE — run ANALYZE first (or wait
 -- for autovacuum) if a table's columns don't show up.`,
 
-  redshift: `-- Redshift is Postgres-derived but has its own quirks: real Postgres's
--- pg_class.reltuples is less reliable here, and its int2vector/array type
--- handling differs enough that a real-Postgres pg_index/ANY() index check
--- fails outright. More fundamentally, Redshift has no traditional
--- per-column indexes at all — it's columnar, with SORTKEY/DISTKEY as the
--- table-level analog — so "indexed" is intentionally omitted below, same
--- as the Snowflake entry.
-SELECT jsonb_pretty(jsonb_object_agg(ti."table", jsonb_build_object(
-  'rowCount', ti.tbl_rows,
-  'columns', (
-    SELECT jsonb_object_agg(s.attname, jsonb_build_object(
-      'distinctCount', CASE WHEN s.n_distinct >= 0 THEN s.n_distinct::bigint
-                            ELSE (ti.tbl_rows * -s.n_distinct)::bigint END,
-      'nullFraction', s.null_frac
-    ))
-    FROM pg_stats s
-    WHERE s.schemaname = ti.schema AND s.tablename = ti."table"
-  )
-)))
-FROM svv_table_info ti
-WHERE ti.schema = 'public'
-  AND ti."table" IN ('table1', 'table2'); -- <- edit this list
+  redshift: `-- Redshift's SQL support is much more limited than real Postgres for this
+-- kind of thing: no jsonb_build_object/jsonb_object_agg/jsonb_pretty at
+-- all (confirmed against a live cluster, not assumed), so producing the
+-- final JSON in one query the way the "postgres" entry does isn't
+-- possible here. This instead returns one plain row per table/column —
+-- reshape it into table-stats.schema.json's "tables" object by hand,
+-- same spirit as the Snowflake/SQLite entries below.
+--
+-- Also: Redshift has no traditional per-column indexes at all — it's
+-- columnar, with SORTKEY/DISTKEY as the real table-level analog — so
+-- "indexed" isn't included; same reasoning as the Snowflake entry.
+SELECT
+  t."table",
+  t.tbl_rows                                                    AS rowCount,
+  s.attname                                                     AS column,
+  CASE WHEN s.n_distinct >= 0 THEN s.n_distinct::bigint
+       ELSE (t.tbl_rows * -s.n_distinct)::bigint END            AS distinctCount,
+  s.null_frac                                                   AS nullFraction
+FROM svv_table_info t
+JOIN pg_stats s ON s.schemaname = t.schema AND s.tablename = t."table"
+WHERE t.schema = 'public'
+  AND t."table" IN ('table1', 'table2') -- <- edit this list
+ORDER BY t."table", s.attname;
 
 -- Note: pg_stats is only populated by ANALYZE — run ANALYZE first if a
--- table's columns don't show up. tbl_rows includes rows pending VACUUM, so
--- treat it as approximate, not exact.`,
+-- table/column doesn't show up. tbl_rows includes rows pending VACUUM, so
+-- treat rowCount as approximate, not exact.`,
 
   sqlite: `-- SQLite has no built-in per-column cardinality/null-fraction catalog, so
 -- this is a per-table template, not a single all-tables query — run it
