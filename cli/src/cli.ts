@@ -1,16 +1,18 @@
 import { readFileSync, writeFileSync, globSync } from "node:fs";
-import { format, inferStyleTemplate, advise, STATS_QUERIES } from "@sql-formatter/core";
-import type { StyleTemplate, Dialect, TableStats } from "@sql-formatter/core";
+import { format, inferStyleTemplate, advise, STATS_QUERIES, lintPortability, PORTABILITY_DIALECTS } from "@sql-formatter/core";
+import type { StyleTemplate, Dialect, TableStats, PortabilityDialect } from "@sql-formatter/core";
 
 const BUNDLED_TEMPLATES_DIR = new URL("../../templates/", import.meta.url);
 const BUNDLED_TEMPLATE_NAME = /^[a-z0-9_-]+$/i;
 const DIALECTS = new Set(["generic", "postgres", "snowflake", "sqlite"]);
+const PORTABILITY_DIALECT_SET = new Set<string>(PORTABILITY_DIALECTS);
 const GLOB_CHARS = /[*?[\]{}]/;
 
 const HELP = `Usage: sql-format [options] [file...]
        sql-format infer <example-file> --id <id> --name <name> [options]
        sql-format advise <file> [--stats <stats.json>] [options]
        sql-format advise stats-queries --dialect <dialect>
+       sql-format lint <file> --source <dialect> --target <dialect>
 
 Formats a SQL file according to a style template. Reads from stdin and
 writes to stdout when no file is given. Accepts multiple files and/or glob
@@ -66,6 +68,19 @@ you or connects to any database itself.
 
   --dialect <dialect>             Required. "postgres", "redshift",
                                   "snowflake", "sqlite", or "generic".
+
+sql-format lint: a heuristic portability linter — flags SQL constructs with
+no clean equivalent in a target dialect (e.g. Snowflake's QUALIFY when
+targeting Redshift). It never rewrites anything and is NOT a verified
+compatibility matrix — dialect support evolves, so treat findings as a
+starting point to verify against your target's current docs.
+
+  <file>                          Required. The SQL file to check.
+  --source <dialect>              Required. Dialect the file is written in:
+                                  "postgres", "snowflake", "sqlite", or
+                                  "redshift".
+  --target <dialect>              Required. Dialect you're porting to (same
+                                  choices as --source).
 `;
 
 interface Args {
@@ -331,6 +346,82 @@ function runAdvise(argv: string[]): void {
   }
 }
 
+interface LintArgs {
+  file: string | null;
+  source: PortabilityDialect | null;
+  target: PortabilityDialect | null;
+}
+
+function parseLintArgs(argv: string[]): LintArgs {
+  let file: string | null = null;
+  let source: PortabilityDialect | null = null;
+  let target: PortabilityDialect | null = null;
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--source") {
+      const value = argv[++i] ?? "";
+      if (!PORTABILITY_DIALECT_SET.has(value)) {
+        process.stderr.write(`Unknown dialect: ${value}\n\n${HELP}`);
+        process.exit(2);
+      }
+      source = value as PortabilityDialect;
+    } else if (arg === "--target") {
+      const value = argv[++i] ?? "";
+      if (!PORTABILITY_DIALECT_SET.has(value)) {
+        process.stderr.write(`Unknown dialect: ${value}\n\n${HELP}`);
+        process.exit(2);
+      }
+      target = value as PortabilityDialect;
+    } else if (arg === "-h" || arg === "--help") {
+      process.stdout.write(HELP);
+      process.exit(0);
+    } else if (arg.startsWith("-")) {
+      process.stderr.write(`Unknown option: ${arg}\n\n${HELP}`);
+      process.exit(2);
+    } else {
+      file = arg;
+    }
+  }
+
+  return { file, source, target };
+}
+
+function runLint(argv: string[]): void {
+  const { file, source, target } = parseLintArgs(argv);
+  if (!file) {
+    process.stderr.write(`sql-format lint requires a file\n\n${HELP}`);
+    process.exit(2);
+  }
+  if (!source || !target) {
+    process.stderr.write(`sql-format lint requires --source and --target\n\n${HELP}`);
+    process.exit(2);
+  }
+
+  let sql: string;
+  try {
+    sql = readFileSync(file, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      process.stderr.write(`File not found: ${file}\n`);
+      process.exit(2);
+    }
+    throw err;
+  }
+
+  const { findings } = lintPortability(sql, source, target);
+
+  if (findings.length === 0) {
+    process.stdout.write(`No portability findings for ${source} -> ${target}.\n`);
+    return;
+  }
+
+  for (const [i, f] of findings.entries()) {
+    process.stdout.write(`${i + 1}. [${f.id}] line ${f.line}: ${f.snippet}\n   ${f.message}\n\n`);
+  }
+  process.exit(1);
+}
+
 export function run(argv: string[]): void {
   if (argv[0] === "infer") {
     runInfer(argv.slice(1));
@@ -338,6 +429,10 @@ export function run(argv: string[]): void {
   }
   if (argv[0] === "advise") {
     runAdvise(argv.slice(1));
+    return;
+  }
+  if (argv[0] === "lint") {
+    runLint(argv.slice(1));
     return;
   }
 

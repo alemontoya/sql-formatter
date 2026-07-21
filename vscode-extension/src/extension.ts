@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
-import { format, inferStyleTemplate } from "@sql-formatter/core";
-import type { Dialect } from "@sql-formatter/core";
+import { format, inferStyleTemplate, lintPortability, PORTABILITY_DIALECTS } from "@sql-formatter/core";
+import type { Dialect, PortabilityDialect } from "@sql-formatter/core";
 import { resolveTemplate } from "./resolveTemplate.js";
 import { BUNDLED_TEMPLATES } from "./templates.js";
 
@@ -39,7 +39,12 @@ export function activate(context: vscode.ExtensionContext): void {
     inferStyleFromSelection(),
   );
 
-  context.subscriptions.push(formattingProvider, inferCommand);
+  const portabilityDiagnostics = vscode.languages.createDiagnosticCollection("sqlFormatterPortability");
+  const checkPortabilityCommand = vscode.commands.registerCommand("sqlFormatter.checkPortability", () =>
+    checkPortability(portabilityDiagnostics),
+  );
+
+  context.subscriptions.push(formattingProvider, inferCommand, checkPortabilityCommand, portabilityDiagnostics);
 }
 
 export function deactivate(): void {}
@@ -82,4 +87,48 @@ async function inferStyleFromSelection(): Promise<void> {
     content: JSON.stringify(result.template, null, 2),
   });
   await vscode.window.showTextDocument(doc);
+}
+
+/**
+ * Heuristic portability check — NOT a verified compatibility matrix or a
+ * rewriter. Flags source-dialect constructs with no clean target-dialect
+ * equivalent as warnings in the editor/Problems panel; never edits the file.
+ */
+async function checkPortability(diagnostics: vscode.DiagnosticCollection): Promise<void> {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) {
+    vscode.window.showErrorMessage("SQL Formatter: open a SQL file first.");
+    return;
+  }
+
+  const source = await vscode.window.showQuickPick(PORTABILITY_DIALECTS, {
+    placeHolder: "Source dialect (what this file is written in)",
+  });
+  if (!source) return;
+  const target = await vscode.window.showQuickPick(PORTABILITY_DIALECTS, {
+    placeHolder: "Target dialect (what you're porting to)",
+  });
+  if (!target) return;
+
+  const { findings } = lintPortability(editor.document.getText(), source as PortabilityDialect, target as PortabilityDialect);
+
+  const diags = findings.map((f) => {
+    const line = f.line - 1;
+    const lineLength = editor.document.lineAt(line).text.length;
+    const range = new vscode.Range(new vscode.Position(line, 0), new vscode.Position(line, lineLength));
+    const diagnostic = new vscode.Diagnostic(range, f.message, vscode.DiagnosticSeverity.Warning);
+    diagnostic.source = "sql-formatter portability";
+    diagnostic.code = f.id;
+    return diagnostic;
+  });
+
+  diagnostics.set(editor.document.uri, diags);
+
+  if (diags.length === 0) {
+    vscode.window.showInformationMessage(`SQL Formatter: no portability findings for ${source} -> ${target}.`);
+  } else {
+    vscode.window.showWarningMessage(
+      `SQL Formatter: ${diags.length} portability finding(s) for ${source} -> ${target} — see Problems panel.`,
+    );
+  }
 }

@@ -1965,3 +1965,90 @@ reference, already-aliased no-op, function/expression/`*`/literal exclusion,
 disabled-by-default no-op, idempotency). 193 tests in `core` alone, 242 total
 across `core`+`cli`+`vscode-extension`, all passing; all workspaces build
 clean.
+
+## Portability linter built (`core/src/lint.ts`, `sql-format lint`)
+
+Revives the Snowflake↔Redshift dialect-translator idea from the "Feature
+request explored and declined (2026-07-20)" section above, in the narrower
+form that was suggested there instead: **flag non-portable constructs, never
+rewrite them.** Scoped down before writing any code (same negotiation
+pattern as the query advisor):
+
+1. **Dialect scope**: any pair among postgres/snowflake/sqlite, plus
+   redshift — not just the originally-discussed Snowflake→Redshift
+   direction. Redshift has no style-template `Dialect` entry (that enum is
+   locked to the three the *formatter* targets), so this introduces its own
+   `PortabilityDialect` type in `lint.ts`, decoupled from `Dialect` — same
+   precedent as `TableStats.dialect` being a free string for the advisor.
+2. **Interface**: a dedicated `sql-format lint` CLI subcommand (not a flag
+   on `advise` — portability and query optimization are different enough
+   concerns to deserve separate subcommands), plus a web UI "Portability"
+   tab and a VS Code "Check Portability" command — available everywhere,
+   per explicit request, unlike some earlier features that shipped CLI-first.
+
+**Detection approach**: deliberately flat-leaf-stream pattern matching, not
+tree/clause-aware analysis. Every construct in the v1 catalog is identifiable
+from a short run of adjacent tokens (a keyword, a function-call shape
+`identifier` + `(`, an operator + identifier pair, etc.) — no construct here
+needed the paren-nesting tree or clause-splitting machinery `printer.ts`/
+`advise.ts` rely on. This is simpler, and scanning flat also reaches inside
+subqueries/CASE bodies/CTEs for free, without needing `advise.ts`'s
+CTE-body-recursion trick.
+
+Each rule declares `nativeTo` (dialects the construct is native to) and
+`unsupportedIn` (targets with no clean equivalent); `lintPortability()` only
+runs rules where the declared `source` is in `nativeTo`, so an unrelated
+dialect's syntax that happens to appear in someone's SQL isn't flagged as if
+it came from the declared source.
+
+**v1 catalog, 15 rules across the four dialects** (each hedged individually
+on dialect-version accuracy rather than asserted as gospel — see each rule's
+`reason` string in `lint.ts`):
+- Snowflake-native: `QUALIFY`, `FLATTEN(...)`, `TRY_CAST`/`TRY_TO_*`,
+  `::VARIANT`/`::OBJECT`/`::ARRAY`.
+- Redshift-native: `GETDATE()`, `IDENTITY(...)`, `DISTKEY`/`SORTKEY`/
+  `DISTSTYLE`, `APPROXIMATE COUNT(DISTINCT ...)`.
+- Postgres-native: `RETURNING`, `DISTINCT ON (...)`, `generate_series(...)`,
+  `SERIAL`/`BIGSERIAL`/`SMALLSERIAL`.
+- SQLite-native: `AUTOINCREMENT`, `WITHOUT ROWID`, `PRAGMA`.
+
+Deliberately excluded rather than guessed at: `ARRAY[...]` literal
+portability across Snowflake/Redshift's evolving array support (genuinely
+uncertain which versions support what, so a rule here risked an actively
+wrong claim rather than an honest gap); postgres JSONB `->`/`->>` operators
+(now broadly supported across Snowflake/Redshift/modern SQLite too — no
+longer a clean "postgres-only" signal); `postgres-returning` deliberately
+excludes sqlite from `unsupportedIn` (SQLite 3.35+ supports `RETURNING`,
+so flagging it there would be a false positive); `sqlite-autoincrement`
+excludes snowflake from `unsupportedIn` for the same reason (Snowflake
+supports `AUTOINCREMENT` natively too).
+
+`infer.ts`/`advise.ts` untouched — this is a fully independent module with
+its own entry point, not layered onto either existing pipeline.
+
+**CLI** (`sql-format lint <file> --source <dialect> --target <dialect>`):
+prints each finding (`[rule-id] line N: snippet` + message) and exits 1 if
+any are found, 0 if clean — same CI-gate convention as `--check` for
+formatting.
+
+**Web UI**: new "Portability" tab, reusing the Advise tab's `.suggestion`/
+`.advise-empty` CSS classes rather than introducing new ones (structurally
+the same "card per finding" shape). Defaults to source=snowflake,
+target=redshift, matching the feature's original motivating scenario.
+
+**VS Code**: new "SQL Formatter: Check Portability" command — prompts for
+source/target via two `showQuickPick`s, then populates a
+`vscode.DiagnosticCollection` so findings surface as warnings directly in
+the editor and the Problems panel (rather than opening a new document, the
+pattern `inferStyleFromSelection` uses) — the more idiomatic VS Code UX for
+a linter. `extension.test.ts`'s `vscode` mock gained `createDiagnosticCollection`,
+`Position`, `Diagnostic`, and `DiagnosticSeverity` to cover it.
+
+13 new tests in `core/src/lint.test.ts` (one per rule-detection case, plus
+same-dialect no-op, cross-dialect filtering, line/snippet accuracy,
+multi-statement `statementIndex` tracking), 6 new CLI tests, 4 new
+vscode-extension tests. 206 tests in `core` alone, 265 total across
+`core`+`cli`+`vscode-extension`, all passing; all workspaces build clean.
+Manually verified end-to-end in the CLI and live in the web UI's Browser
+pane (Snowflake `QUALIFY`/`::VARIANT` correctly flagged against a Redshift
+target).

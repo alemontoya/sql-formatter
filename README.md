@@ -10,7 +10,9 @@ This is a personal tool. Interfaces shipped today: a CLI (below), a web UI
 ([web/README.md](web/README.md)), a [VS Code extension](vscode-extension/README.md),
 and [DBeaver integration](#dbeaver-integration) (below — reuses the CLI directly,
 no separate plugin). The CLI also has a heuristic [query advisor](#query-advisor-advise--heuristic-suggestions-not-a-query-optimizer)
-(`sql-format advise`) — suggestions only, never an automatic rewrite.
+(`sql-format advise`) — suggestions only, never an automatic rewrite — and a
+heuristic [portability linter](#portability-linter-lint) (`sql-format lint`)
+that flags dialect-specific constructs when porting SQL between dialects.
 
 ## Install
 
@@ -149,6 +151,27 @@ it or connects to anything on your behalf.
 sql-format advise stats-queries --dialect postgres
 ```
 
+### Portability linter (`lint`)
+
+`sql-format lint` flags SQL constructs with no clean equivalent in a target
+dialect — e.g. Snowflake's `QUALIFY` clause when porting to Redshift, or
+Postgres's `RETURNING` when porting to Snowflake. **It's a heuristic
+pattern-matcher over the source text, not a verified compatibility matrix
+or a rewriter** — it never changes your query, and dialect support evolves,
+so treat findings as a starting point to verify against your target's
+current docs, not a final answer.
+
+```
+sql-format lint query.sql --source snowflake --target redshift
+```
+
+`--source`/`--target` are `postgres`, `snowflake`, `sqlite`, or `redshift`
+(Redshift isn't one of the formatter's three style-template dialects, but is
+a real dialect here — see `core/src/lint.ts`'s `PortabilityDialect` type for
+why it's kept separate from `Dialect`). Exits 1 if any finding is printed,
+0 if the file is clean — usable as a CI gate the same way `--check` is for
+formatting.
+
 ## Full option reference
 
 ```
@@ -156,6 +179,7 @@ sql-format [options] [file...]
 sql-format infer <example-file> --id <id> --name <name> [options]
 sql-format advise <file> [--stats <stats.json>] [options]
 sql-format advise stats-queries --dialect <dialect>
+sql-format lint <file> --source <dialect> --target <dialect>
 
 -t, --template <name|path>   "default", "compact", "river", or
                               "river-quoted" (bundled), or a path to a

@@ -347,3 +347,46 @@ describe("sql-format advise stats-queries", () => {
     expect(stderr).toContain("requires --dialect");
   });
 });
+
+describe("sql-format lint", () => {
+  it("prints findings with a nonzero exit code when the target lacks a construct", () => {
+    const file = tempSqlFile("select id, row_number() over (order by id) as rn from t qualify rn = 1;");
+    const { stdout, status } = runCli(["lint", file, "--source", "snowflake", "--target", "redshift"]);
+    expect(status).toBe(1);
+    expect(stdout).toContain("snowflake-qualify");
+    expect(stdout).toContain("line 1");
+  });
+
+  it("says so and exits 0 when there are no findings", () => {
+    const file = tempSqlFile("select id from t where active = true;");
+    const { stdout, status } = runCli(["lint", file, "--source", "snowflake", "--target", "redshift"]);
+    expect(status).toBe(0);
+    expect(stdout).toContain("No portability findings");
+  });
+
+  it("errors on a missing SQL file", () => {
+    const { stderr, status } = runCli(["lint", "/no/such/file.sql", "--source", "postgres", "--target", "sqlite"]);
+    expect(status).toBe(2);
+    expect(stderr).toContain("File not found");
+  });
+
+  it("requires a file argument", () => {
+    const { stderr, status } = runCli(["lint", "--source", "postgres", "--target", "sqlite"]);
+    expect(status).toBe(2);
+    expect(stderr).toContain("requires a file");
+  });
+
+  it("requires --source and --target", () => {
+    const file = tempSqlFile("select 1;");
+    const { stderr, status } = runCli(["lint", file]);
+    expect(status).toBe(2);
+    expect(stderr).toContain("requires --source and --target");
+  });
+
+  it("rejects an unknown dialect", () => {
+    const file = tempSqlFile("select 1;");
+    const { stderr, status } = runCli(["lint", file, "--source", "mysql", "--target", "sqlite"]);
+    expect(status).toBe(2);
+    expect(stderr).toContain("Unknown dialect");
+  });
+});

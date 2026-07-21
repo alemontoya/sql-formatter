@@ -1,6 +1,6 @@
 import "./style.css";
-import { format, inferStyleTemplate, advise, STATS_QUERIES } from "@sql-formatter/core";
-import type { StyleTemplate, Dialect, InferResult, TableStats, Suggestion } from "@sql-formatter/core";
+import { format, inferStyleTemplate, advise, STATS_QUERIES, lintPortability, PORTABILITY_DIALECTS } from "@sql-formatter/core";
+import type { StyleTemplate, Dialect, InferResult, TableStats, Suggestion, PortabilityDialect, PortabilityFinding } from "@sql-formatter/core";
 import { BUNDLED_TEMPLATES } from "./templates";
 import { loadSavedTemplates, saveCustomTemplate, deleteCustomTemplate, getActiveSelection, setActiveSelection } from "./storage";
 
@@ -31,6 +31,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
     <button class="tab active" data-tab="format" type="button">Format</button>
     <button class="tab" data-tab="infer" type="button">Infer style from example</button>
     <button class="tab" data-tab="advise" type="button">Advise</button>
+    <button class="tab" data-tab="lint" type="button">Portability</button>
   </div>
 
   <section class="panel active" id="panel-format">
@@ -136,6 +137,35 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       </div>
     </div>
   </section>
+
+  <section class="panel" id="panel-lint">
+    <div class="toolbar">
+      <label>
+        Source dialect
+        <select id="lint-source">
+          ${PORTABILITY_DIALECTS.map((d) => `<option value="${d}" ${d === "snowflake" ? "selected" : ""}>${d}</option>`).join("")}
+        </select>
+      </label>
+      <label>
+        Target dialect
+        <select id="lint-target">
+          ${PORTABILITY_DIALECTS.map((d) => `<option value="${d}" ${d === "redshift" ? "selected" : ""}>${d}</option>`).join("")}
+        </select>
+      </label>
+      <button type="button" id="lint-btn">Check portability</button>
+    </div>
+    <div class="error-banner" id="lint-error"></div>
+    <div class="editor-grid">
+      <div class="editor-col">
+        <div class="col-header">SQL written for the source dialect</div>
+        <textarea id="lint-input" spellcheck="false" placeholder="Paste SQL to check…"></textarea>
+      </div>
+      <div class="editor-col">
+        <div class="col-header">Findings</div>
+        <div class="advise-results" id="lint-output"></div>
+      </div>
+    </div>
+  </section>
 `;
 
 // ---------------------------------------------------------------------------
@@ -164,6 +194,7 @@ const panels = {
   format: document.querySelector<HTMLElement>("#panel-format")!,
   infer: document.querySelector<HTMLElement>("#panel-infer")!,
   advise: document.querySelector<HTMLElement>("#panel-advise")!,
+  lint: document.querySelector<HTMLElement>("#panel-lint")!,
 };
 
 tabs.forEach((tab) => {
@@ -513,4 +544,58 @@ copyStatsQueriesBtn.addEventListener("click", async () => {
   const original = copyStatsQueriesBtn.textContent;
   copyStatsQueriesBtn.textContent = "Copied!";
   setTimeout(() => (copyStatsQueriesBtn.textContent = original), 1200);
+});
+
+// ---------------------------------------------------------------------------
+// Portability lint panel — heuristic pattern-matcher, NOT a verified
+// compatibility matrix or a rewriter. Runs entirely client-side against
+// @sql-formatter/core, same as every other panel: no server involved.
+
+const lintSourceSelect = document.querySelector<HTMLSelectElement>("#lint-source")!;
+const lintTargetSelect = document.querySelector<HTMLSelectElement>("#lint-target")!;
+const lintBtn = document.querySelector<HTMLButtonElement>("#lint-btn")!;
+const lintError = document.querySelector<HTMLElement>("#lint-error")!;
+const lintInput = document.querySelector<HTMLTextAreaElement>("#lint-input")!;
+const lintOutput = document.querySelector<HTMLElement>("#lint-output")!;
+
+function showLintError(message: string | null): void {
+  if (message) {
+    lintError.textContent = message;
+    lintError.classList.add("visible");
+  } else {
+    lintError.textContent = "";
+    lintError.classList.remove("visible");
+  }
+}
+
+function renderLintFindings(findings: PortabilityFinding[], source: string, target: string): void {
+  if (findings.length === 0) {
+    lintOutput.innerHTML = `<p class="advise-empty">No portability findings for ${escapeHtml(source)} -> ${escapeHtml(target)}.</p>`;
+    return;
+  }
+  lintOutput.innerHTML = findings
+    .map(
+      (f) => `
+        <div class="suggestion">
+          <span class="kind">${escapeHtml(f.id)}</span>
+          <span class="stmt-index">line ${f.line}</span>
+          <p class="message"><code>${escapeHtml(f.snippet)}</code> — ${escapeHtml(f.message)}</p>
+        </div>`,
+    )
+    .join("");
+}
+
+lintBtn.addEventListener("click", () => {
+  const sql = lintInput.value;
+  if (!sql.trim()) return showLintError("Paste some SQL to check first.");
+  const source = lintSourceSelect.value as PortabilityDialect;
+  const target = lintTargetSelect.value as PortabilityDialect;
+  if (source === target) return showLintError("Source and target dialects are the same — nothing to check.");
+  try {
+    const result = lintPortability(sql, source, target);
+    renderLintFindings(result.findings, source, target);
+    showLintError(null);
+  } catch (err) {
+    showLintError(err instanceof Error ? err.message : String(err));
+  }
 });

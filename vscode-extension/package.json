@@ -33,6 +33,10 @@
       {
         "command": "sqlFormatter.inferStyleFromSelection",
         "title": "SQL Formatter: Infer Style From Selection"
+      },
+      {
+        "command": "sqlFormatter.checkPortability",
+        "title": "SQL Formatter: Check Portability"
       }
     ]
   },

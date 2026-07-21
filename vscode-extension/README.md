@@ -38,6 +38,12 @@ time, no dependency needs to ship in the `.vsix` at all.
   JSON document. Low-confidence fields are flagged with a warning notification
   — review those by hand before relying on the generated template, same as
   the CLI's `infer` subcommand.
+- **SQL Formatter: Check Portability** (Command Palette) — prompts for a
+  source and target dialect (`postgres`/`snowflake`/`sqlite`/`redshift`),
+  then flags constructs in the active file with no clean equivalent in the
+  target as warnings in the editor and the Problems panel — same heuristic
+  engine as the CLI's `lint` subcommand. **Not a verified compatibility
+  matrix and never rewrites anything.**
 
 ## Settings
 

@@ -6,3 +6,5 @@ export { advise } from "./advise.js";
 export type { TableStats, TableColumnStats, Suggestion, SuggestionKind, AdviseResult } from "./advise.js";
 export { STATS_QUERIES } from "./stats-queries.js";
 export type { Dialect } from "./types.js";
+export { lintPortability, PORTABILITY_DIALECTS } from "./lint.js";
+export type { PortabilityDialect, PortabilityFinding, PortabilityLintResult } from "./lint.js";

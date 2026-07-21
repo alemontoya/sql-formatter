@@ -8,34 +8,41 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const {
   registerDocumentFormattingEditProvider,
   registerCommand,
+  createDiagnosticCollection,
   getConfiguration,
   getWorkspaceFolder,
   showErrorMessage,
   showWarningMessage,
+  showInformationMessage,
   showInputBox,
   showQuickPick,
   openTextDocument,
   showTextDocument,
+  diagnosticsSet,
 } = vi.hoisted(() => ({
   registerDocumentFormattingEditProvider: vi.fn((_selector: unknown, _provider: unknown) => ({ dispose: () => {} })),
   registerCommand: vi.fn((_id: string, _callback: (...args: unknown[]) => unknown) => ({ dispose: () => {} })),
+  createDiagnosticCollection: vi.fn((_name: string) => ({ set: diagnosticsSet, dispose: () => {} })),
   getConfiguration: vi.fn(),
   getWorkspaceFolder: vi.fn(),
   showErrorMessage: vi.fn(),
   showWarningMessage: vi.fn(),
+  showInformationMessage: vi.fn(),
   showInputBox: vi.fn(),
   showQuickPick: vi.fn(),
   openTextDocument: vi.fn(),
   showTextDocument: vi.fn(),
+  diagnosticsSet: vi.fn(),
 }));
 
 vi.mock("vscode", () => ({
-  languages: { registerDocumentFormattingEditProvider },
+  languages: { registerDocumentFormattingEditProvider, createDiagnosticCollection },
   commands: { registerCommand },
   workspace: { getConfiguration, getWorkspaceFolder, openTextDocument },
   window: {
     showErrorMessage,
     showWarningMessage,
+    showInformationMessage,
     showInputBox,
     showQuickPick,
     showTextDocument,
@@ -47,6 +54,22 @@ vi.mock("vscode", () => ({
       public end: unknown,
     ) {}
   },
+  Position: class Position {
+    constructor(
+      public line: number,
+      public character: number,
+    ) {}
+  },
+  Diagnostic: class Diagnostic {
+    source?: string;
+    code?: string;
+    constructor(
+      public range: unknown,
+      public message: string,
+      public severity: unknown,
+    ) {}
+  },
+  DiagnosticSeverity: { Warning: 1 },
   TextEdit: { replace: (range: unknown, newText: string) => ({ range, newText }) },
 }));
 
@@ -54,10 +77,12 @@ import * as vscode from "vscode";
 import { activate } from "./extension.js";
 
 function fakeDocument(text: string) {
+  const lines = text.split("\n");
   return {
     uri: { fsPath: "/tmp/test.sql" },
     getText: () => text,
     positionAt: (offset: number) => ({ offset }),
+    lineAt: (line: number) => ({ text: lines[line] ?? "" }),
   };
 }
 
@@ -69,14 +94,16 @@ beforeEach(() => {
 });
 
 describe("activate()", () => {
-  it("registers a formatting provider for sql and the infer command", () => {
+  it("registers a formatting provider, the infer command, and the portability command", () => {
     const subscriptions: unknown[] = [];
     activate({ subscriptions } as never);
 
     expect(registerDocumentFormattingEditProvider).toHaveBeenCalledTimes(1);
     expect(registerDocumentFormattingEditProvider.mock.calls[0]![0]).toEqual({ language: "sql" });
     expect(registerCommand).toHaveBeenCalledWith("sqlFormatter.inferStyleFromSelection", expect.any(Function));
-    expect(subscriptions).toHaveLength(2);
+    expect(registerCommand).toHaveBeenCalledWith("sqlFormatter.checkPortability", expect.any(Function));
+    expect(createDiagnosticCollection).toHaveBeenCalledWith("sqlFormatterPortability");
+    expect(subscriptions).toHaveLength(4);
   });
 });
 
@@ -151,5 +178,64 @@ describe("sqlFormatter.inferStyleFromSelection command", () => {
 
     expect(showErrorMessage).toHaveBeenCalledWith("SQL Formatter: open a SQL file first.");
     expect(openTextDocument).not.toHaveBeenCalled();
+  });
+});
+
+describe("sqlFormatter.checkPortability command", () => {
+  it("sets diagnostics and warns when findings are present", async () => {
+    activate({ subscriptions: [] } as never);
+    const check = registerCommand.mock.calls.find((c) => c[0] === "sqlFormatter.checkPortability")?.[1] as () => Promise<void>;
+
+    (vscode.window as unknown as { activeTextEditor: unknown }).activeTextEditor = {
+      document: fakeDocument("select id from t qualify row_number() over (order by id) = 1;"),
+    };
+    showQuickPick.mockResolvedValueOnce("snowflake").mockResolvedValueOnce("redshift");
+
+    await check();
+
+    expect(diagnosticsSet).toHaveBeenCalledTimes(1);
+    const diags = diagnosticsSet.mock.calls[0]![1] as { message: string; code: string }[];
+    expect(diags).toHaveLength(1);
+    expect(diags[0]!.code).toBe("snowflake-qualify");
+    expect(showWarningMessage).toHaveBeenCalledWith(expect.stringContaining("1 portability finding"));
+  });
+
+  it("clears diagnostics and informs when there are no findings", async () => {
+    activate({ subscriptions: [] } as never);
+    const check = registerCommand.mock.calls.find((c) => c[0] === "sqlFormatter.checkPortability")?.[1] as () => Promise<void>;
+
+    (vscode.window as unknown as { activeTextEditor: unknown }).activeTextEditor = {
+      document: fakeDocument("select id from t;"),
+    };
+    showQuickPick.mockResolvedValueOnce("snowflake").mockResolvedValueOnce("redshift");
+
+    await check();
+
+    expect(diagnosticsSet).toHaveBeenCalledWith(expect.anything(), []);
+    expect(showInformationMessage).toHaveBeenCalledWith(expect.stringContaining("no portability findings"));
+  });
+
+  it("does nothing when the source dialect prompt is cancelled", async () => {
+    activate({ subscriptions: [] } as never);
+    const check = registerCommand.mock.calls.find((c) => c[0] === "sqlFormatter.checkPortability")?.[1] as () => Promise<void>;
+
+    (vscode.window as unknown as { activeTextEditor: unknown }).activeTextEditor = {
+      document: fakeDocument("select 1;"),
+    };
+    showQuickPick.mockResolvedValueOnce(undefined);
+
+    await check();
+
+    expect(diagnosticsSet).not.toHaveBeenCalled();
+  });
+
+  it("shows an error and does nothing when there's no active editor", async () => {
+    activate({ subscriptions: [] } as never);
+    const check = registerCommand.mock.calls.find((c) => c[0] === "sqlFormatter.checkPortability")?.[1] as () => Promise<void>;
+
+    await check();
+
+    expect(showErrorMessage).toHaveBeenCalledWith("SQL Formatter: open a SQL file first.");
+    expect(diagnosticsSet).not.toHaveBeenCalled();
   });
 });

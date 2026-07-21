@@ -91,6 +91,17 @@ the same ready-to-run SQL the CLI's `advise stats-queries` prints — copy
 it, run it yourself against your database, and paste the JSON result back
 under a `"tables"` key in a stats file you upload above.
 
+**Portability tab** — heuristic dialect-portability check, the same engine
+behind `sql-format lint` on the CLI. **Not a verified compatibility matrix
+and never rewrites anything** — pick a source and target dialect
+(`postgres`/`snowflake`/`sqlite`/`redshift`), paste SQL written for the
+source dialect, and click "Check portability". Each finding names the
+construct, its source line, and why it has no clean equivalent in the
+target — e.g. Snowflake's `QUALIFY` clause has nothing to translate to on
+Redshift/Postgres/SQLite. Dialect support evolves, so treat findings as a
+starting point to verify against your target's current docs, not a final
+answer.
+
 ## Development
 
 See the root [HANDOFF.md](../HANDOFF.md) — search for "Web UI built" for
