@@ -784,6 +784,13 @@ signal: true only if a short multi-clause statement is directly observed on
 one line; absence isn't evidence either way, so it defaults to
 false/0-confidence rather than voting "false" from silence.
 
+(Note: `joins.multiConditionIndent`/`booleanOperators.indentContinuation`
+were later made inferrable — see the dated section below titled
+"`joins.multiConditionIndent` / `booleanOperators.indentContinuation` now
+inferred." `aliasing.autoAliasBareColumns`, added 2026-07-20, joined this
+not-inferred list from the start — see "`aliasing.autoAliasBareColumns`
+field added" below.)
+
 Two bugs found via a round-trip validation approach (format a real fixture
 with `river.json`, then run inference on that output, and check it recovers
 `river.json`'s own field values — validates inference against trusted
@@ -1898,3 +1905,63 @@ non-exemption boundary, idempotency); one new assertion added to
 `vscode-extension`'s existing `resolveTemplate.test.ts` bundled-names
 test. 236 tests total across `core`+`cli`+`vscode-extension`, all
 passing; all four workspaces build clean.
+
+## `aliasing.autoAliasBareColumns` field added
+
+User's `river-quoted` example also wanted every bare `SELECT` column
+auto-given an explicit alias (`my_name` -> `"my_name" AS my_name`, `t.my_name`
+-> `"t"."my_name" AS my_name`), initially framed as maybe needing a
+non-rule-based/LLM approach since it looked like "the tool has to know a
+column's name."
+
+Talked through the scope before writing any code — this splits into two very
+different problems:
+1. **Naming a bare column reference** — purely mechanical, alias = the
+   reference's own unqualified name. No guessing involved.
+2. **Naming an aggregate/expression** (e.g. `SUM(this)` -> `total_this`) —
+   needs an explicit convention table (`SUM` -> `total_`, `COUNT` -> `count_`,
+   etc.) and still can't cover arbitrary expressions
+   (`SUM(a+b)`, `CASE WHEN ...`, `COUNT(DISTINCT x)`) without guessing.
+
+User chose to scope this to (1) only: auto-alias plain column references,
+leave anything else (function calls, expressions, `*`, literals, and
+anything already aliased) untouched with no guessing — staying fully
+rule-based, consistent with this project's original architecture bet against
+LLM dependence.
+
+New required schema field `aliasing.autoAliasBareColumns: boolean` (same
+"required + update all bundled templates" convention as every prior style
+field). Implementation in `printer.ts`:
+- `isBareColumnRef(item)` — true only when a `SELECT`/`RETURNING` list item
+  is nothing but a plain (possibly dotted) identifier chain: `col`, `t.col`,
+  `schema.t.col`. A single leaf of the wrong kind (a group/function call, an
+  operator other than the qualifying `.`, `*`) disqualifies the whole item.
+- `injectBareColumnAlias(item)` — when `isBareColumnRef` is true and the item
+  has no top-level `AS` yet, appends a synthetic `AS <name>` where `<name>` is
+  the chain's last (unqualified) segment, unquoted if the source was
+  quoted. The synthetic alias leaf is built as a plain `identifier` token
+  (not `quotedIdentifier`), so it flows through the existing
+  `casing.identifiers` + `quoting.quoteAliases` rendering path exactly like a
+  hand-written alias — no new rendering logic needed, just a new node in the
+  tree before printing.
+- Wired into `printClauseBody()` for `SELECT`/`RETURNING`, applied to each
+  item *before* the `alignment.aliases` check, so injected aliases
+  automatically participate in `alignment.aliases`'s column-alignment too.
+- `infer.ts` doesn't attempt to infer this field (0 confidence, copied from
+  the base template) — same treatment as `alignment.aliases`/
+  `alignment.assignments`/`quoting.quoteAliases`.
+
+`autoAliasBareColumns: false` in `default.json`/`compact.json`/`river.json`
+(no behavior change for those templates); `true` in `river-quoted.json`,
+matching the style it was built for.
+
+Verified against the user's exact example, byte-for-byte, both via a direct
+`format()` call and live in the web UI's Browser pane — `SUM(this)` correctly
+stayed un-aliased (out of scope), `t.my_name`-style qualified refs correctly
+aliased to `my_name`, `*`/`t.*`/already-aliased items correctly left
+untouched. 6 new tests in `format.test.ts`'s
+`describe("format (aliasing.autoAliasBareColumns)")` (basic case, qualified
+reference, already-aliased no-op, function/expression/`*`/literal exclusion,
+disabled-by-default no-op, idempotency). 193 tests in `core` alone, 242 total
+across `core`+`cli`+`vscode-extension`, all passing; all workspaces build
+clean.
