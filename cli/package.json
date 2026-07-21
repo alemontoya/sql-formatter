@@ -11,6 +11,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.112.4",
     "@sql-formatter/core": "*"
   },
   "devDependencies": {

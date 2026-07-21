@@ -6,11 +6,24 @@ import { describe, expect, it } from "vitest";
 
 const CLI_ENTRY = new URL("./index.ts", import.meta.url).pathname;
 
-function runCli(args: string[], input?: string): { stdout: string; stderr: string; status: number | null } {
+function runCli(
+  args: string[],
+  input?: string,
+  envOverrides?: Record<string, string | undefined>,
+): { stdout: string; stderr: string; status: number | null } {
+  let env = process.env;
+  if (envOverrides) {
+    env = { ...process.env };
+    for (const [key, value] of Object.entries(envOverrides)) {
+      if (value === undefined) delete env[key];
+      else env[key] = value;
+    }
+  }
   const result = spawnSync("npx", ["tsx", CLI_ENTRY, ...args], {
     input,
     encoding: "utf8",
     cwd: new URL("..", import.meta.url).pathname,
+    env,
   });
   return { stdout: result.stdout, stderr: result.stderr, status: result.status };
 }
@@ -388,5 +401,16 @@ describe("sql-format lint", () => {
     const { stderr, status } = runCli(["lint", file, "--source", "mysql", "--target", "sqlite"]);
     expect(status).toBe(2);
     expect(stderr).toContain("Unknown dialect");
+  });
+
+  it("--deep requires ANTHROPIC_API_KEY and errors clearly without it", () => {
+    const file = tempSqlFile("select id from t where active = true;");
+    const { stderr, status } = runCli(
+      ["lint", file, "--source", "snowflake", "--target", "redshift", "--deep"],
+      undefined,
+      { ANTHROPIC_API_KEY: undefined },
+    );
+    expect(status).toBe(2);
+    expect(stderr).toContain("ANTHROPIC_API_KEY");
   });
 });

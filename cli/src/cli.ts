@@ -1,5 +1,14 @@
 import { readFileSync, writeFileSync, globSync } from "node:fs";
-import { format, inferStyleTemplate, advise, STATS_QUERIES, lintPortability, PORTABILITY_DIALECTS } from "@sql-formatter/core";
+import {
+  format,
+  inferStyleTemplate,
+  advise,
+  STATS_QUERIES,
+  lintPortability,
+  PORTABILITY_DIALECTS,
+  buildDeepCheckRequest,
+} from "@sql-formatter/core";
+import type { DeepCheckFinding, DeepCheckResponseSchema } from "@sql-formatter/core";
 import type { StyleTemplate, Dialect, TableStats, PortabilityDialect } from "@sql-formatter/core";
 
 const BUNDLED_TEMPLATES_DIR = new URL("../../templates/", import.meta.url);
@@ -81,6 +90,12 @@ starting point to verify against your target's current docs.
                                   "redshift".
   --target <dialect>              Required. Dialect you're porting to (same
                                   choices as --source).
+  --deep                          Also send the query to the Claude API for
+                                  an LLM-backed review, on top of the local
+                                  rule catalog above. Requires the
+                                  ANTHROPIC_API_KEY environment variable.
+                                  These findings are unverified model output
+                                  — review by hand before acting on them.
 `;
 
 interface Args {
@@ -350,12 +365,14 @@ interface LintArgs {
   file: string | null;
   source: PortabilityDialect | null;
   target: PortabilityDialect | null;
+  deep: boolean;
 }
 
 function parseLintArgs(argv: string[]): LintArgs {
   let file: string | null = null;
   let source: PortabilityDialect | null = null;
   let target: PortabilityDialect | null = null;
+  let deep = false;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -373,6 +390,8 @@ function parseLintArgs(argv: string[]): LintArgs {
         process.exit(2);
       }
       target = value as PortabilityDialect;
+    } else if (arg === "--deep") {
+      deep = true;
     } else if (arg === "-h" || arg === "--help") {
       process.stdout.write(HELP);
       process.exit(0);
@@ -384,11 +403,33 @@ function parseLintArgs(argv: string[]): LintArgs {
     }
   }
 
-  return { file, source, target };
+  return { file, source, target, deep };
 }
 
-function runLint(argv: string[]): void {
-  const { file, source, target } = parseLintArgs(argv);
+async function runDeepCheck(sql: string, source: PortabilityDialect, target: PortabilityDialect): Promise<DeepCheckFinding[]> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    process.stderr.write("--deep requires the ANTHROPIC_API_KEY environment variable to be set.\n");
+    process.exit(2);
+  }
+
+  const { default: Anthropic } = await import("@anthropic-ai/sdk");
+  const client = new Anthropic({ apiKey });
+
+  const request = buildDeepCheckRequest(sql, source, target);
+  const response = await client.messages.create(request);
+
+  const block = response.content[0];
+  if (!block || block.type !== "text") {
+    throw new Error("Deep check response did not contain a text block.");
+  }
+
+  const parsed = JSON.parse(block.text) as DeepCheckResponseSchema;
+  return parsed.findings;
+}
+
+async function runLint(argv: string[]): Promise<void> {
+  const { file, source, target, deep } = parseLintArgs(argv);
   if (!file) {
     process.stderr.write(`sql-format lint requires a file\n\n${HELP}`);
     process.exit(2);
@@ -413,13 +454,32 @@ function runLint(argv: string[]): void {
 
   if (findings.length === 0) {
     process.stdout.write(`No portability findings for ${source} -> ${target}.\n`);
-    return;
+  } else {
+    for (const [i, f] of findings.entries()) {
+      process.stdout.write(`${i + 1}. [${f.id}] line ${f.line}: ${f.snippet}\n   ${f.message}\n\n`);
+    }
   }
 
-  for (const [i, f] of findings.entries()) {
-    process.stdout.write(`${i + 1}. [${f.id}] line ${f.line}: ${f.snippet}\n   ${f.message}\n\n`);
+  let deepFindings: DeepCheckFinding[] = [];
+  if (deep) {
+    process.stdout.write("Running deep check against the Claude API...\n\n");
+    deepFindings = await runDeepCheck(sql, source, target);
+
+    if (deepFindings.length === 0) {
+      process.stdout.write("Deep check: no additional findings.\n");
+    } else {
+      process.stdout.write(
+        `Deep check (LLM-generated, unverified — review by hand) for ${source} -> ${target}:\n\n`,
+      );
+      for (const [i, f] of deepFindings.entries()) {
+        process.stdout.write(`${i + 1}. [${f.confidence} confidence] ${f.snippet}\n   ${f.message}\n\n`);
+      }
+    }
   }
-  process.exit(1);
+
+  if (findings.length > 0 || deepFindings.length > 0) {
+    process.exit(1);
+  }
 }
 
 export function run(argv: string[]): void {
@@ -432,7 +492,10 @@ export function run(argv: string[]): void {
     return;
   }
   if (argv[0] === "lint") {
-    runLint(argv.slice(1));
+    runLint(argv.slice(1)).catch((err) => {
+      process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+      process.exit(1);
+    });
     return;
   }
 

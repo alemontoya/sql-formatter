@@ -8,3 +8,5 @@ export { STATS_QUERIES } from "./stats-queries.js";
 export type { Dialect } from "./types.js";
 export { lintPortability, PORTABILITY_DIALECTS } from "./lint.js";
 export type { PortabilityDialect, PortabilityFinding, PortabilityLintResult } from "./lint.js";
+export { buildDeepCheckRequest } from "./deep-check.js";
+export type { DeepCheckFinding, DeepCheckResponseSchema } from "./deep-check.js";

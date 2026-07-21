@@ -12,7 +12,11 @@ and [DBeaver integration](#dbeaver-integration) (below — reuses the CLI direct
 no separate plugin). The CLI also has a heuristic [query advisor](#query-advisor-advise--heuristic-suggestions-not-a-query-optimizer)
 (`sql-format advise`) — suggestions only, never an automatic rewrite — and a
 heuristic [portability linter](#portability-linter-lint) (`sql-format lint`)
-that flags dialect-specific constructs when porting SQL between dialects.
+that flags dialect-specific constructs when porting SQL between dialects,
+with an opt-in [Deep Check](#deep-check---deep--optional-sends-sql-to-the-claude-api)
+mode that sends the query to the Claude API for a second opinion. Everything
+else stays local-first — Deep Check is the one explicit exception, across
+all three interfaces.
 
 ## Install
 
@@ -172,6 +176,23 @@ why it's kept separate from `Dialect`). Exits 1 if any finding is printed,
 0 if the file is clean — usable as a CI gate the same way `--check` is for
 formatting.
 
+#### Deep Check (`--deep`) — optional, sends SQL to the Claude API
+
+The rule catalog above can never be exhaustive, so `lint` also supports an
+opt-in second opinion from Claude: add `--deep` to also send the query to
+the Anthropic API for an LLM-backed review, on top of the local findings.
+
+```
+sql-format lint query.sql --source snowflake --target redshift --deep
+```
+
+Requires the `ANTHROPIC_API_KEY` environment variable. **This is the one
+place in this tool that leaves your machine** — everything else here is
+local-first by design. Deep Check findings are unverified model output
+(flagged, not verified, and never used to rewrite the query), printed
+separately from and clearly labeled as distinct from the deterministic
+local findings, and count toward the same exit-1-if-any-findings behavior.
+
 ## Full option reference
 
 ```
@@ -179,7 +200,7 @@ sql-format [options] [file...]
 sql-format infer <example-file> --id <id> --name <name> [options]
 sql-format advise <file> [--stats <stats.json>] [options]
 sql-format advise stats-queries --dialect <dialect>
-sql-format lint <file> --source <dialect> --target <dialect>
+sql-format lint <file> --source <dialect> --target <dialect> [--deep]
 
 -t, --template <name|path>   "default", "compact", "river", or
                               "river-quoted" (bundled), or a path to a

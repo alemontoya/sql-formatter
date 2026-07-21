@@ -1,8 +1,35 @@
 import "./style.css";
-import { format, inferStyleTemplate, advise, STATS_QUERIES, lintPortability, PORTABILITY_DIALECTS } from "@sql-formatter/core";
-import type { StyleTemplate, Dialect, InferResult, TableStats, Suggestion, PortabilityDialect, PortabilityFinding } from "@sql-formatter/core";
+import {
+  format,
+  inferStyleTemplate,
+  advise,
+  STATS_QUERIES,
+  lintPortability,
+  PORTABILITY_DIALECTS,
+  buildDeepCheckRequest,
+} from "@sql-formatter/core";
+import type {
+  StyleTemplate,
+  Dialect,
+  InferResult,
+  TableStats,
+  Suggestion,
+  PortabilityDialect,
+  PortabilityFinding,
+  DeepCheckFinding,
+  DeepCheckResponseSchema,
+} from "@sql-formatter/core";
 import { BUNDLED_TEMPLATES } from "./templates";
-import { loadSavedTemplates, saveCustomTemplate, deleteCustomTemplate, getActiveSelection, setActiveSelection } from "./storage";
+import {
+  loadSavedTemplates,
+  saveCustomTemplate,
+  deleteCustomTemplate,
+  getActiveSelection,
+  setActiveSelection,
+  getAnthropicApiKey,
+  setAnthropicApiKey,
+  clearAnthropicApiKey,
+} from "./storage";
 
 const DIALECTS: Dialect[] = ["generic", "postgres", "snowflake", "sqlite"];
 
@@ -22,7 +49,9 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   <header>
     <div>
       <h1>SQL Formatter</h1>
-      <p>Formats SQL entirely in your browser — nothing is sent anywhere.</p>
+      <p>Formats SQL entirely in your browser — nothing is sent anywhere,
+      except Deep Check on the Portability tab, which sends SQL to the
+      Claude API only when you click it.</p>
     </div>
     <button type="button" id="theme-toggle" aria-label="Toggle light/dark theme"></button>
   </header>
@@ -154,6 +183,12 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       </label>
       <button type="button" id="lint-btn">Check portability</button>
     </div>
+    <div class="toolbar">
+      <button type="button" class="secondary" id="deep-check-btn">Deep check (Claude API)</button>
+      <span class="template-info" id="deep-check-key-status"></span>
+      <button type="button" class="secondary" id="set-api-key-btn">Set API key</button>
+      <button type="button" class="secondary" id="clear-api-key-btn" hidden>Clear API key</button>
+    </div>
     <div class="error-banner" id="lint-error"></div>
     <div class="editor-grid">
       <div class="editor-col">
@@ -163,6 +198,8 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       <div class="editor-col">
         <div class="col-header">Findings</div>
         <div class="advise-results" id="lint-output"></div>
+        <div class="col-header">Deep check (LLM-generated, unverified — review by hand)</div>
+        <div class="advise-results" id="deep-check-output"></div>
       </div>
     </div>
   </section>
@@ -599,3 +636,91 @@ lintBtn.addEventListener("click", () => {
     showLintError(err instanceof Error ? err.message : String(err));
   }
 });
+
+// ---------------------------------------------------------------------------
+// Deep check — an explicit, opt-in exception to this app's "nothing is sent
+// anywhere" default. Sends the pasted SQL directly to the Claude API using a
+// key stored only in this browser's localStorage. Never runs automatically;
+// only fires when the user clicks the button below.
+
+const deepCheckBtn = document.querySelector<HTMLButtonElement>("#deep-check-btn")!;
+const deepCheckKeyStatus = document.querySelector<HTMLElement>("#deep-check-key-status")!;
+const setApiKeyBtn = document.querySelector<HTMLButtonElement>("#set-api-key-btn")!;
+const clearApiKeyBtn = document.querySelector<HTMLButtonElement>("#clear-api-key-btn")!;
+const deepCheckOutput = document.querySelector<HTMLElement>("#deep-check-output")!;
+
+function renderApiKeyStatus(): void {
+  const key = getAnthropicApiKey();
+  deepCheckKeyStatus.textContent = key ? "Anthropic API key saved in this browser" : "No Anthropic API key saved";
+  clearApiKeyBtn.hidden = !key;
+}
+
+setApiKeyBtn.addEventListener("click", () => {
+  const key = window.prompt(
+    "Anthropic API key — stored only in this browser's localStorage, sent only to the Claude API when you click \"Deep check\":",
+  );
+  if (!key) return;
+  setAnthropicApiKey(key.trim());
+  renderApiKeyStatus();
+});
+
+clearApiKeyBtn.addEventListener("click", () => {
+  clearAnthropicApiKey();
+  renderApiKeyStatus();
+});
+
+function renderDeepCheckFindings(findings: DeepCheckFinding[]): void {
+  if (findings.length === 0) {
+    deepCheckOutput.innerHTML = `<p class="advise-empty">Deep check found no additional findings.</p>`;
+    return;
+  }
+  deepCheckOutput.innerHTML = findings
+    .map(
+      (f) => `
+        <div class="suggestion">
+          <span class="kind">${escapeHtml(f.confidence)} confidence</span>
+          <p class="message"><code>${escapeHtml(f.snippet)}</code> — ${escapeHtml(f.message)}</p>
+        </div>`,
+    )
+    .join("");
+}
+
+deepCheckBtn.addEventListener("click", async () => {
+  const sql = lintInput.value;
+  if (!sql.trim()) return showLintError("Paste some SQL to check first.");
+  const source = lintSourceSelect.value as PortabilityDialect;
+  const target = lintTargetSelect.value as PortabilityDialect;
+  if (source === target) return showLintError("Source and target dialects are the same — nothing to check.");
+
+  let apiKey = getAnthropicApiKey();
+  if (!apiKey) {
+    const proceed = window.confirm(
+      "Deep check sends this SQL to the Claude API. No Anthropic API key is saved yet — set one now?",
+    );
+    if (!proceed) return;
+    setApiKeyBtn.click();
+    apiKey = getAnthropicApiKey();
+    if (!apiKey) return;
+  }
+
+  deepCheckBtn.disabled = true;
+  deepCheckOutput.innerHTML = `<p class="advise-empty">Running deep check…</p>`;
+  try {
+    const { default: Anthropic } = await import("@anthropic-ai/sdk");
+    const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
+    const request = buildDeepCheckRequest(sql, source, target);
+    const response = await client.messages.create(request);
+    const block = response.content[0];
+    if (!block || block.type !== "text") throw new Error("Deep check response did not contain a text block.");
+    const parsed = JSON.parse(block.text) as DeepCheckResponseSchema;
+    renderDeepCheckFindings(parsed.findings);
+    showLintError(null);
+  } catch (err) {
+    deepCheckOutput.innerHTML = "";
+    showLintError(`Deep check failed: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    deepCheckBtn.disabled = false;
+  }
+});
+
+renderApiKeyStatus();

@@ -102,6 +102,18 @@ Redshift/Postgres/SQLite. Dialect support evolves, so treat findings as a
 starting point to verify against your target's current docs, not a final
 answer.
 
+"Deep check (Claude API)" on the same tab is the one control in this app
+that isn't local-only: it sends your pasted SQL directly to the Claude API
+for a second, LLM-backed opinion, on top of (not instead of) the
+deterministic findings above. Click "Set API key" to save a personal
+Anthropic API key — stored only in this browser's `localStorage`, never
+sent anywhere except to the Claude API when you click "Deep check". The
+first time you click "Deep check" without a key saved, a confirmation
+prompt discloses that your SQL is about to be sent to the API before
+anything happens. Findings appear in their own section, labeled
+"LLM-generated, unverified — review by hand" — same treatment as the
+`--deep` CLI flag and the VS Code "Deep Check Portability" command.
+
 ## Development
 
 See the root [HANDOFF.md](../HANDOFF.md) — search for "Web UI built" for

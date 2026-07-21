@@ -2,7 +2,9 @@
 
 Formats SQL against a personal, fine-grained style template — directly
 inside VS Code. Local-first: it calls `@sql-formatter/core` in-process, in
-the extension host; nothing is sent anywhere.
+the extension host; nothing is sent anywhere — except the opt-in "Deep
+Check Portability" command below, which explicitly sends SQL to the Claude
+API when you invoke it.
 
 ## Install (personal use — not published to the Marketplace)
 
@@ -44,6 +46,18 @@ time, no dependency needs to ship in the `.vsix` at all.
   target as warnings in the editor and the Problems panel — same heuristic
   engine as the CLI's `lint` subcommand. **Not a verified compatibility
   matrix and never rewrites anything.**
+- **SQL Formatter: Deep Check Portability (Claude API)** (Command Palette)
+  — the one command in this extension that isn't local-only. Sends the
+  active file's SQL directly to the Claude API for a second, LLM-backed
+  portability opinion, on top of (not instead of) Check Portability's
+  deterministic findings. Prompts to set an Anthropic API key on first use
+  if none is saved; the key is stored via VS Code's `SecretStorage` API
+  (not `settings.json`, which isn't secure storage). Findings are added to
+  the same Problems panel as Information-severity diagnostics, clearly
+  labeled "unverified — review by hand" to distinguish them from Check
+  Portability's Warning-severity ones.
+- **SQL Formatter: Set Anthropic API Key** (Command Palette) — saves or
+  replaces the key Deep Check uses, independent of running a check.
 
 ## Settings
 

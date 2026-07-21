@@ -2077,3 +2077,75 @@ for a second top-level argument to `TO_DATE` itself.
 original query asserting all four rule IDs fire together. 219 tests in `core`
 alone, all passing; build clean.
 
+## Deep Check: LLM-backed portability review via the Claude API (`core/src/deep-check.ts`, `--deep`, opt-in)
+
+The hand-written rule catalog above can never be exhaustive — dialect
+divergence is deep and constantly shifting, and every rule added is still
+just one more pattern for one more construct someone happened to hit. When
+asked what it would take to make the linter exhaustive, the honest answer
+was "not achievable by hand." The user's own experience asking Claude
+directly to do dialect translation in chat — "it works well" — led to the
+proposal this section implements: let the tool call the Claude API itself
+for a second opinion, without weakening anything the deterministic linter
+already does.
+
+**Three options were weighed** before writing code: (1) keep `core`
+strictly local-only, forever; (2) add an LLM-backed check as an explicit,
+opt-in exception, alongside the deterministic linter; (3) replace the
+linter with the LLM check entirely. Chose (2) — the deterministic catalog
+stays the default and the CI-gating behavior (`sql-format lint`, exit code)
+is unchanged; Deep Check is something you ask for, not something that runs
+by default or silently.
+
+**Architecture**: `core` still makes zero network calls itself — the
+project's founding local-first invariant is unbroken. `core/src/deep-check.ts`
+exports one pure function, `buildDeepCheckRequest(sql, source, target)`,
+which builds the `client.messages.create()` request body (model
+`claude-opus-4-8`, a system prompt instructing the model to flag constructs
+without rewriting the query and to return an empty `findings` array rather
+than invent low-value findings, and `output_config.format` requesting
+structured JSON output matching `{findings: [{snippet, message, confidence}]}`)
+— and never calls it. Each of the three interfaces makes the actual network
+call itself, sourcing the API key the way appropriate to its own
+environment:
+
+- **CLI** (`sql-format lint <file> --source <dialect> --target <dialect> --deep`):
+  reads `ANTHROPIC_API_KEY` from the environment — the standard convention
+  for a Node CLI — and errors clearly (exit 2) if unset before making any
+  call. Deep Check findings print after the local findings, labeled
+  "LLM-generated, unverified — review by hand," and count toward the same
+  exit-1-if-any-findings CI-gating behavior as local findings.
+- **VS Code**: a `SecretStorage`-backed key (`context.secrets`, not
+  `settings.json`, which isn't secure storage) via a new "SQL Formatter: Set
+  Anthropic API Key" command; the existing "Check Portability" command is
+  untouched, and a new "SQL Formatter: Deep Check Portability (Claude API)"
+  command prompts to set a key on first use if none is saved, then adds its
+  findings as Information-severity diagnostics (distinct from the
+  deterministic linter's Warning-severity ones) to the same
+  `DiagnosticCollection`, located by searching the document text for each
+  finding's `snippet`.
+- **Web UI**: the key lives in this browser's `localStorage` only (there's
+  no backend to hold a server-side key), entered via a `window.prompt` on
+  a new "Set API key" button in the Portability tab. Calling the Claude API
+  directly from browser JS requires the SDK's `dangerouslyAllowBrowser: true`
+  constructor flag — verified against the SDK's own README via WebFetch
+  before writing this, rather than assumed from training-data recall, per
+  the project's "verify, don't guess" discipline. A `window.confirm` gate
+  fires before first use, disclosing that SQL will be sent to the Claude
+  API — this app's header still says "nothing is sent anywhere," which
+  stays true unless Deep Check is explicitly invoked.
+
+The web UI's `@anthropic-ai/sdk` import is dynamic (`await import(...)`),
+so the ~155 KB SDK bundle only loads when Deep Check is actually clicked,
+not on initial page load.
+
+4 new tests in `core/src/deep-check.test.ts` (model/content correctness,
+schema shape, system-prompt instructions, purity), 1 new CLI test
+(`--deep` without `ANTHROPIC_API_KEY` errors clearly), 6 new
+vscode-extension tests (command registration, key storage, cancel paths,
+success/failure diagnostics). 219 tests in `core`, 43 in `cli`, 23 in
+`vscode-extension` — all passing; all workspaces build clean. Manually
+verified end-to-end in the web UI's Browser pane (Portability tab renders
+the new Deep Check controls; the no-key confirm prompt correctly gates the
+first call) and via the CLI (missing-key error path confirmed with the real
+binary).

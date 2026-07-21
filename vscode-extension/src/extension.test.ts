@@ -18,11 +18,14 @@ const {
   showQuickPick,
   openTextDocument,
   showTextDocument,
+  withProgress,
   diagnosticsSet,
+  diagnosticsGet,
+  messagesCreate,
 } = vi.hoisted(() => ({
   registerDocumentFormattingEditProvider: vi.fn((_selector: unknown, _provider: unknown) => ({ dispose: () => {} })),
   registerCommand: vi.fn((_id: string, _callback: (...args: unknown[]) => unknown) => ({ dispose: () => {} })),
-  createDiagnosticCollection: vi.fn((_name: string) => ({ set: diagnosticsSet, dispose: () => {} })),
+  createDiagnosticCollection: vi.fn((_name: string) => ({ set: diagnosticsSet, get: diagnosticsGet, dispose: () => {} })),
   getConfiguration: vi.fn(),
   getWorkspaceFolder: vi.fn(),
   showErrorMessage: vi.fn(),
@@ -32,7 +35,10 @@ const {
   showQuickPick: vi.fn(),
   openTextDocument: vi.fn(),
   showTextDocument: vi.fn(),
+  withProgress: vi.fn((_opts: unknown, task: () => unknown) => task()),
   diagnosticsSet: vi.fn(),
+  diagnosticsGet: vi.fn(() => []),
+  messagesCreate: vi.fn(),
 }));
 
 vi.mock("vscode", () => ({
@@ -46,6 +52,7 @@ vi.mock("vscode", () => ({
     showInputBox,
     showQuickPick,
     showTextDocument,
+    withProgress,
     activeTextEditor: undefined as unknown,
   },
   Range: class Range {
@@ -69,12 +76,30 @@ vi.mock("vscode", () => ({
       public severity: unknown,
     ) {}
   },
-  DiagnosticSeverity: { Warning: 1 },
+  DiagnosticSeverity: { Warning: 1, Information: 2 },
+  ProgressLocation: { Notification: 1 },
   TextEdit: { replace: (range: unknown, newText: string) => ({ range, newText }) },
+}));
+
+vi.mock("@anthropic-ai/sdk", () => ({
+  default: class Anthropic {
+    messages = { create: messagesCreate };
+    constructor(public opts: { apiKey: string }) {}
+  },
 }));
 
 import * as vscode from "vscode";
 import { activate } from "./extension.js";
+
+function fakeContext(secrets?: Partial<{ get: () => Promise<string | undefined>; store: () => Promise<void> }>) {
+  return {
+    subscriptions: [],
+    secrets: {
+      get: vi.fn(secrets?.get ?? (() => Promise.resolve(undefined))),
+      store: vi.fn(secrets?.store ?? (() => Promise.resolve())),
+    },
+  };
+}
 
 function fakeDocument(text: string) {
   const lines = text.split("\n");
@@ -102,8 +127,10 @@ describe("activate()", () => {
     expect(registerDocumentFormattingEditProvider.mock.calls[0]![0]).toEqual({ language: "sql" });
     expect(registerCommand).toHaveBeenCalledWith("sqlFormatter.inferStyleFromSelection", expect.any(Function));
     expect(registerCommand).toHaveBeenCalledWith("sqlFormatter.checkPortability", expect.any(Function));
+    expect(registerCommand).toHaveBeenCalledWith("sqlFormatter.deepCheckPortability", expect.any(Function));
+    expect(registerCommand).toHaveBeenCalledWith("sqlFormatter.setAnthropicApiKey", expect.any(Function));
     expect(createDiagnosticCollection).toHaveBeenCalledWith("sqlFormatterPortability");
-    expect(subscriptions).toHaveLength(4);
+    expect(subscriptions).toHaveLength(6);
   });
 });
 
@@ -237,5 +264,109 @@ describe("sqlFormatter.checkPortability command", () => {
 
     expect(showErrorMessage).toHaveBeenCalledWith("SQL Formatter: open a SQL file first.");
     expect(diagnosticsSet).not.toHaveBeenCalled();
+  });
+});
+
+describe("sqlFormatter.setAnthropicApiKey command", () => {
+  it("stores the entered key via SecretStorage", async () => {
+    const context = fakeContext();
+    activate(context as never);
+    const setKey = registerCommand.mock.calls.find((c) => c[0] === "sqlFormatter.setAnthropicApiKey")?.[1] as () => Promise<void>;
+
+    showInputBox.mockResolvedValueOnce("sk-ant-test-key");
+
+    await setKey();
+
+    expect(context.secrets.store).toHaveBeenCalledWith("sqlFormatter.anthropicApiKey", "sk-ant-test-key");
+    expect(showInformationMessage).toHaveBeenCalledWith(expect.stringContaining("saved"));
+  });
+
+  it("does nothing when the input box is cancelled", async () => {
+    const context = fakeContext();
+    activate(context as never);
+    const setKey = registerCommand.mock.calls.find((c) => c[0] === "sqlFormatter.setAnthropicApiKey")?.[1] as () => Promise<void>;
+
+    showInputBox.mockResolvedValueOnce(undefined);
+
+    await setKey();
+
+    expect(context.secrets.store).not.toHaveBeenCalled();
+  });
+});
+
+describe("sqlFormatter.deepCheckPortability command", () => {
+  it("shows an error and does nothing when there's no active editor", async () => {
+    const context = fakeContext({ get: () => Promise.resolve("sk-ant-test-key") });
+    activate(context as never);
+    const deepCheck = registerCommand.mock.calls.find((c) => c[0] === "sqlFormatter.deepCheckPortability")?.[1] as () => Promise<void>;
+
+    await deepCheck();
+
+    expect(showErrorMessage).toHaveBeenCalledWith("SQL Formatter: open a SQL file first.");
+    expect(messagesCreate).not.toHaveBeenCalled();
+  });
+
+  it("prompts to set an API key when none is saved, and bails if declined", async () => {
+    const context = fakeContext({ get: () => Promise.resolve(undefined) });
+    activate(context as never);
+    const deepCheck = registerCommand.mock.calls.find((c) => c[0] === "sqlFormatter.deepCheckPortability")?.[1] as () => Promise<void>;
+
+    (vscode.window as unknown as { activeTextEditor: unknown }).activeTextEditor = {
+      document: fakeDocument("select 1;"),
+    };
+    showInformationMessage.mockResolvedValueOnce("Cancel");
+
+    await deepCheck();
+
+    expect(showInformationMessage).toHaveBeenCalledWith(expect.stringContaining("Deep Check sends this file's SQL"), "Set API Key", "Cancel");
+    expect(messagesCreate).not.toHaveBeenCalled();
+  });
+
+  it("calls the Claude API and adds Information-severity diagnostics for findings", async () => {
+    const context = fakeContext({ get: () => Promise.resolve("sk-ant-test-key") });
+    activate(context as never);
+    const deepCheck = registerCommand.mock.calls.find((c) => c[0] === "sqlFormatter.deepCheckPortability")?.[1] as () => Promise<void>;
+
+    const sql = "select to_date(created_at) from t;";
+    (vscode.window as unknown as { activeTextEditor: unknown }).activeTextEditor = {
+      document: fakeDocument(sql),
+    };
+    showQuickPick.mockResolvedValueOnce("snowflake").mockResolvedValueOnce("redshift");
+    messagesCreate.mockResolvedValueOnce({
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            findings: [{ snippet: "to_date(created_at)", message: "single-arg TO_DATE differs", confidence: "medium" }],
+          }),
+        },
+      ],
+    });
+
+    await deepCheck();
+
+    expect(messagesCreate).toHaveBeenCalledTimes(1);
+    expect(diagnosticsSet).toHaveBeenCalledTimes(1);
+    const diags = diagnosticsSet.mock.calls[0]![1] as { message: string; severity: unknown }[];
+    expect(diags).toHaveLength(1);
+    expect(diags[0]!.message).toContain("unverified");
+    expect(diags[0]!.severity).toBe(2);
+    expect(showWarningMessage).toHaveBeenCalledWith(expect.stringContaining("1 additional finding"));
+  });
+
+  it("shows an error when the API call fails", async () => {
+    const context = fakeContext({ get: () => Promise.resolve("sk-ant-test-key") });
+    activate(context as never);
+    const deepCheck = registerCommand.mock.calls.find((c) => c[0] === "sqlFormatter.deepCheckPortability")?.[1] as () => Promise<void>;
+
+    (vscode.window as unknown as { activeTextEditor: unknown }).activeTextEditor = {
+      document: fakeDocument("select 1;"),
+    };
+    showQuickPick.mockResolvedValueOnce("snowflake").mockResolvedValueOnce("redshift");
+    messagesCreate.mockRejectedValueOnce(new Error("network error"));
+
+    await deepCheck();
+
+    expect(showErrorMessage).toHaveBeenCalledWith(expect.stringContaining("deep check failed"));
   });
 });

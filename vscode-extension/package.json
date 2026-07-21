@@ -1,7 +1,7 @@
 {
   "name": "sql-formatter-vscode",
   "displayName": "SQL Formatter",
-  "description": "Formats SQL against a personal, fine-grained style template (postgres/snowflake/sqlite/generic). Local-first — never sends SQL anywhere.",
+  "description": "Formats SQL against a personal, fine-grained style template (postgres/snowflake/sqlite/generic). Local-first, with an opt-in Deep Check command that sends SQL to the Claude API.",
   "version": "0.1.0",
   "private": true,
   "publisher": "local",
@@ -37,6 +37,14 @@
       {
         "command": "sqlFormatter.checkPortability",
         "title": "SQL Formatter: Check Portability"
+      },
+      {
+        "command": "sqlFormatter.deepCheckPortability",
+        "title": "SQL Formatter: Deep Check Portability (Claude API)"
+      },
+      {
+        "command": "sqlFormatter.setAnthropicApiKey",
+        "title": "SQL Formatter: Set Anthropic API Key"
       }
     ]
   },
@@ -45,6 +53,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.112.4",
     "@sql-formatter/core": "*"
   },
   "devDependencies": {

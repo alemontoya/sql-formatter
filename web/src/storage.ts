@@ -2,6 +2,7 @@ import type { StyleTemplate } from "@sql-formatter/core";
 
 const TEMPLATES_KEY = "sqlFormatter.customTemplates";
 const ACTIVE_KEY = "sqlFormatter.activeTemplate";
+const ANTHROPIC_API_KEY_KEY = "sqlFormatter.anthropicApiKey";
 const MAX_SAVED = 20;
 
 export interface SavedTemplate {
@@ -38,4 +39,23 @@ export function getActiveSelection(): string | null {
 
 export function setActiveSelection(value: string): void {
   localStorage.setItem(ACTIVE_KEY, value);
+}
+
+/**
+ * A personal Anthropic API key, stored in this browser's localStorage only
+ * — never sent anywhere except directly to the Claude API from Deep Check.
+ * This is an explicit, opt-in exception to the rest of this app's
+ * never-leaves-your-browser-except-to-Anthropic default; see the Deep Check
+ * UI copy for the disclosure shown before first use.
+ */
+export function getAnthropicApiKey(): string | null {
+  return localStorage.getItem(ANTHROPIC_API_KEY_KEY);
+}
+
+export function setAnthropicApiKey(key: string): void {
+  localStorage.setItem(ANTHROPIC_API_KEY_KEY, key);
+}
+
+export function clearAnthropicApiKey(): void {
+  localStorage.removeItem(ANTHROPIC_API_KEY_KEY);
 }
