@@ -23,6 +23,9 @@ Then open the printed local URL (default `http://localhost:5173`).
 On Windows, `start-web-ui.bat` (repo root) does this in one double-click —
 builds `core` if it hasn't been built yet, starts the dev server, and opens
 your default browser to it automatically. Close its console window to stop
+the server. On Linux/macOS, `start-web-ui.sh` (repo root) does the same —
+run it from a terminal (`./start-web-ui.sh`) or double-click it if your file
+manager is set to launch executable scripts. Ctrl+C in the terminal stops
 the server.
 
 ## Build
