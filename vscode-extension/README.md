@@ -48,6 +48,11 @@ an absolute / workspace-relative path to your own style-template JSON file
 `schema/style-template.schema.json` at the repo root). Set it per-workspace
 in `.vscode/settings.json` if different projects want different styles.
 
+`"river-quoted"` additionally auto-adds `AS <name>` to a bare `SELECT`
+column with no alias yet (e.g. `my_col` -> `my_col AS my_col`), via the
+schema's `aliasing.autoAliasBareColumns` field — it only names plain column
+references, never a function call or expression.
+
 ## Development
 
 ```
