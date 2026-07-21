@@ -2052,3 +2052,28 @@ vscode-extension tests. 206 tests in `core` alone, 265 total across
 Manually verified end-to-end in the CLI and live in the web UI's Browser
 pane (Snowflake `QUALIFY`/`::VARIANT` correctly flagged against a Redshift
 target).
+
+## Four more portability rules: `IFF`, `::TIMESTAMP_TZ`/`_LTZ`/`_NTZ`, bare `DATE_TRUNC` part, single-arg `TO_DATE`
+
+Driven by a real query hitting "no portability findings" when it shouldn't
+have — same growth model as the rest of the catalog: rules get added when a
+real construct is actually encountered, not built ahead of time from a spec.
+Confirmed against Redshift docs before adding: `IFF(...)` is Snowflake-only
+(Redshift wants `CASE`/`DECODE`); `::TIMESTAMP_TZ`/`::TIMESTAMP_LTZ`/
+`::TIMESTAMP_NTZ` are Snowflake-only cast targets; Redshift's `DATE_TRUNC`
+requires the date-part argument as a quoted string literal, not a bare
+keyword like Snowflake allows; and Snowflake's `TO_DATE(expr)` single-argument
+form (relying on automatic format detection) has no equivalent in Redshift,
+which requires an explicit format string as a second argument.
+
+The single-arg `TO_DATE` rule needed a new matcher, `singleArgFunctionCall(name)`
+in `lint.ts` — walks the leaf stream from the function name, paren-depth-tracks
+to find the matching close paren, and counts *top-level* commas only (depth
+`1` relative to the function's own open paren), so a nested call's own
+arguments — e.g. `TO_DATE(DATE_TRUNC(month, my_date))` — don't get mistaken
+for a second top-level argument to `TO_DATE` itself.
+
+8 new tests in `core/src/lint.test.ts`, including a full reproduction of the
+original query asserting all four rule IDs fire together. 219 tests in `core`
+alone, all passing; build clean.
+

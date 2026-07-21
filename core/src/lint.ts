@@ -92,6 +92,31 @@ function bareIdentifier(word: string) {
   return (leaves: Leaf[], i: number): number | null => (leaves[i] && isIdentifier(leaves[i]!, word) ? 1 : null);
 }
 
+/** `name(...)` where the call has exactly one top-level argument (nested
+ * calls' own commas don't count). Matches the whole call through its
+ * closing paren, so the finding's snippet shows the full expression. */
+function singleArgFunctionCall(name: string) {
+  return (leaves: Leaf[], i: number): number | null => {
+    const nameTok = leaves[i];
+    if (!nameTok || !isIdentifier(nameTok, name)) return null;
+    const open = leaves[i + 1];
+    if (!open || !isPunct(open, "(")) return null;
+    if (leaves[i + 2] && isPunct(leaves[i + 2]!, ")")) return null; // empty call, not single-arg
+    let depth = 1;
+    let topLevelCommas = 0;
+    let j = i + 2;
+    while (j < leaves.length && depth > 0) {
+      const l = leaves[j]!;
+      if (isPunct(l, "(")) depth++;
+      else if (isPunct(l, ")")) depth--;
+      else if (depth === 1 && isPunct(l, ",")) topLevelCommas++;
+      j++;
+    }
+    if (depth !== 0) return null; // unbalanced — bail rather than guess
+    return topLevelCommas === 0 ? j - i : null;
+  };
+}
+
 const PORTABILITY_RULES: PortabilityRule[] = [
   // --- Snowflake-native --------------------------------------------------
   {
@@ -131,6 +156,51 @@ const PORTABILITY_RULES: PortabilityRule[] = [
       const word = next.token.type === "identifier" ? next.token.value.toUpperCase() : "";
       return word === "VARIANT" || word === "OBJECT" || word === "ARRAY" ? 2 : null;
     },
+  },
+  {
+    id: "snowflake-iff",
+    nativeTo: ["snowflake"],
+    unsupportedIn: ["postgres", "redshift", "sqlite"],
+    summary: "IFF(condition, true_result, false_result) is Snowflake's inline conditional shorthand.",
+    reason: "This target has no IFF() function — rewrite as CASE WHEN condition THEN true_result ELSE false_result END (redshift also has DECODE(condition, true_value, true_result, false_result) as an alternative).",
+    match: functionCall("IFF"),
+  },
+  {
+    id: "snowflake-timestamp-variant-cast",
+    nativeTo: ["snowflake"],
+    unsupportedIn: ["postgres", "redshift", "sqlite"],
+    summary: "::TIMESTAMP_TZ / ::TIMESTAMP_LTZ / ::TIMESTAMP_NTZ cast to one of Snowflake's three timestamp-with/without-timezone variants.",
+    reason: "This target doesn't recognize these type names — redshift's closest equivalents are TIMESTAMP and TIMESTAMPTZ (no separate _LTZ/_NTZ distinction), postgres has TIMESTAMP and TIMESTAMP WITH TIME ZONE, sqlite has no native timestamp type at all.",
+    match: (leaves, i) => {
+      const op = leaves[i];
+      const next = leaves[i + 1];
+      if (!op || !isOperator(op, "::") || !next) return null;
+      const word = next.token.type === "identifier" ? next.token.value.toUpperCase() : "";
+      return word === "TIMESTAMP_TZ" || word === "TIMESTAMP_LTZ" || word === "TIMESTAMP_NTZ" ? 2 : null;
+    },
+  },
+  {
+    id: "snowflake-date-trunc-bare-part",
+    nativeTo: ["snowflake"],
+    unsupportedIn: ["postgres", "redshift"],
+    summary: "DATE_TRUNC(<bare word>, ...) with an unquoted date part like MONTH/YEAR/DAY.",
+    reason: "This target's date_trunc() requires the date part as a quoted string literal (e.g. 'month'), not a bare identifier — snowflake uniquely allows both forms.",
+    match: (leaves, i) => {
+      const fn = leaves[i];
+      if (!fn || !isIdentifier(fn, "DATE_TRUNC")) return null;
+      const open = leaves[i + 1];
+      if (!open || !isPunct(open, "(")) return null;
+      const arg = leaves[i + 2];
+      return arg && arg.token.type === "identifier" ? 3 : null;
+    },
+  },
+  {
+    id: "snowflake-to-date-single-arg",
+    nativeTo: ["snowflake"],
+    unsupportedIn: ["postgres", "redshift"],
+    summary: "TO_DATE(expr) called with a single argument, relying on Snowflake's automatic format detection.",
+    reason: "This target's to_date() requires an explicit format string as a second argument — snowflake uniquely allows omitting it.",
+    match: singleArgFunctionCall("TO_DATE"),
   },
 
   // --- Redshift-native -----------------------------------------------------

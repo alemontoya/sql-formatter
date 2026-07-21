@@ -104,4 +104,73 @@ describe("lintPortability", () => {
     const result = lintPortability(sql, "snowflake", "postgres");
     expect(result.findings.map((f) => f.statementIndex)).toEqual([0, 1]);
   });
+
+  it("flags IFF(...) for snowflake source", () => {
+    const sql = "select iff(active, 'yes', 'no') from t;";
+    const result = lintPortability(sql, "snowflake", "redshift");
+    expect(result.findings.some((f) => f.id === "snowflake-iff")).toBe(true);
+  });
+
+  it("flags ::TIMESTAMP_TZ / ::TIMESTAMP_LTZ / ::TIMESTAMP_NTZ casts", () => {
+    const sql = "select a::timestamp_tz, b::timestamp_ltz, c::timestamp_ntz from t;";
+    const result = lintPortability(sql, "snowflake", "redshift");
+    expect(result.findings.filter((f) => f.id === "snowflake-timestamp-variant-cast")).toHaveLength(3);
+  });
+
+  it("does not flag an unrelated timestamp cast", () => {
+    const sql = "select a::timestamp from t;";
+    const result = lintPortability(sql, "snowflake", "redshift");
+    expect(result.findings.some((f) => f.id === "snowflake-timestamp-variant-cast")).toBe(false);
+  });
+
+  it("flags DATE_TRUNC with a bare (unquoted) date part for redshift/postgres targets", () => {
+    const sql = "select date_trunc(month, created_at) from t;";
+    expect(lintPortability(sql, "snowflake", "redshift").findings.some((f) => f.id === "snowflake-date-trunc-bare-part")).toBe(true);
+    expect(lintPortability(sql, "snowflake", "postgres").findings.some((f) => f.id === "snowflake-date-trunc-bare-part")).toBe(true);
+  });
+
+  it("does not flag DATE_TRUNC when the date part is already a quoted string", () => {
+    const sql = "select date_trunc('month', created_at) from t;";
+    const result = lintPortability(sql, "snowflake", "redshift");
+    expect(result.findings.some((f) => f.id === "snowflake-date-trunc-bare-part")).toBe(false);
+  });
+
+  it("flags single-argument TO_DATE for redshift/postgres targets", () => {
+    const sql = "select to_date(created_at) from t;";
+    const result = lintPortability(sql, "snowflake", "redshift");
+    expect(result.findings.some((f) => f.id === "snowflake-to-date-single-arg")).toBe(true);
+  });
+
+  it("does not flag TO_DATE with an explicit format argument", () => {
+    const sql = "select to_date(created_at, 'YYYY-MM-DD') from t;";
+    const result = lintPortability(sql, "snowflake", "redshift");
+    expect(result.findings.some((f) => f.id === "snowflake-to-date-single-arg")).toBe(false);
+  });
+
+  it("does not let a nested function call's comma count against TO_DATE's own arg count", () => {
+    // The comma inside DATE_TRUNC(month, my_date) is nested (depth 2 relative
+    // to TO_DATE's own parens) and must not be mistaken for a second
+    // top-level argument to TO_DATE itself.
+    const sql = "select to_date(date_trunc(month, my_date)) from t;";
+    const result = lintPortability(sql, "snowflake", "redshift");
+    expect(result.findings.some((f) => f.id === "snowflake-to-date-single-arg")).toBe(true);
+  });
+
+  it("reproduces the real query that surfaced these four rules", () => {
+    const sql = [
+      "SELECT TO_DATE(DATE_TRUNC(MONTH, my_date::TIMESTAMP_TZ)) AS my_month,",
+      "       IFF(my_boolean, 'is true', 'is false') AS is_it_true",
+      "  FROM my_table;",
+    ].join("\n");
+    const result = lintPortability(sql, "snowflake", "redshift");
+    const ids = new Set(result.findings.map((f) => f.id));
+    expect(ids).toEqual(
+      new Set([
+        "snowflake-to-date-single-arg",
+        "snowflake-date-trunc-bare-part",
+        "snowflake-timestamp-variant-cast",
+        "snowflake-iff",
+      ]),
+    );
+  });
 });
