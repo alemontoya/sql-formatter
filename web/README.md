@@ -48,7 +48,11 @@ live as you type. Pick a template from the dropdown:
 - `Default` / `Compact` / `River` / `River (quoted identifiers)` — the
   same bundled templates the CLI ships (`templates/*.json` at the repo
   root; the web app imports them directly, so it's always in sync with the
-  CLI's bundled set).
+  CLI's bundled set). `River (quoted identifiers)` also auto-adds
+  `AS <name>` to a bare `SELECT` column with no alias yet (e.g. `my_col` ->
+  `my_col AS my_col`) via `aliasing.autoAliasBareColumns` — see
+  `schema/style-template.schema.json` for the field, and note it only
+  names plain column references, never a function call or expression.
 - `Custom` — upload your own style-template JSON (see
   `schema/style-template.schema.json`), or apply one produced by the Infer
   tab below. Custom templates are saved to `localStorage` (up to 20, most

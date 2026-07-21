@@ -89,7 +89,8 @@ sql-format --template compact query.sql
 # a river-style (keyword-alignment) template
 sql-format --template templates/river.json query.sql
 
-# river-style + every identifier double-quoted, but aliases left bare
+# river-style + every identifier double-quoted, aliases left bare, and a
+# bare column auto-given "AS <its own name>" (e.g. my_col -> my_col AS my_col)
 sql-format --template river-quoted query.sql
 
 # your own style-template JSON file (see schema/style-template.schema.json)
