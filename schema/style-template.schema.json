@@ -73,6 +73,7 @@
         "ctes",
         "parentheses",
         "alignment",
+        "aliasing",
         "quoting",
         "blankLines",
         "statementTerminator"
@@ -226,6 +227,17 @@
             "assignments": {
               "type": "boolean",
               "description": "Align = signs into a column (e.g. in UPDATE ... SET or INSERT column lists)."
+            }
+          }
+        },
+        "aliasing": {
+          "type": "object",
+          "required": ["autoAliasBareColumns"],
+          "additionalProperties": false,
+          "properties": {
+            "autoAliasBareColumns": {
+              "type": "boolean",
+              "description": "In SELECT/RETURNING lists, add an explicit `AS <name>` to a bare column reference that has no alias yet (e.g. `my_col` or `t.my_col` -> `my_col AS my_col`), using the column's own (unqualified) name. Deliberately scoped to plain identifier references only — function calls, expressions, and anything already aliased are left untouched, no naming guesses are made for them."
             }
           }
         },

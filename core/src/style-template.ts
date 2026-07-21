@@ -27,6 +27,10 @@ export interface StyleTemplate {
     ctes: { onePerLine: boolean; blankLineBetween: boolean };
     parentheses: { subqueryOpenParenSameLine: boolean };
     alignment: { aliases: boolean; assignments: boolean };
+    /** Auto-generating an `AS <name>` for bare column references with no
+     * existing alias — scoped separately from `alignment.aliases`, which
+     * only *positions* an alias that's already there. */
+    aliasing: { autoAliasBareColumns: boolean };
     quoting: {
       forceQuoteIdentifiers: boolean;
       quoteChar: "double" | "backtick" | "bracket" | "none";

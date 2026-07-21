@@ -55,6 +55,9 @@
       "aliases": false,
       "assignments": false
     },
+    "aliasing": {
+      "autoAliasBareColumns": false
+    },
     "quoting": {
       "forceQuoteIdentifiers": false,
       "quoteChar": "none",

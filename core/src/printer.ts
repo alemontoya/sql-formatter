@@ -764,6 +764,53 @@ function topLevelAsIndex(item: Node[]): number {
   return item.findIndex((n) => isKeywordLeaf(n, "AS"));
 }
 
+/** True when `item` is nothing but a plain (possibly qualified) column
+ * reference — `col` or `t.col` or `schema.t.col` — with no function call,
+ * expression, operator, or literal involved. Deliberately conservative: a
+ * single stray leaf of the wrong kind (a group, an operator other than the
+ * qualifying `.`, `*`) disqualifies the whole item, since anything beyond a
+ * plain reference means `autoAliasBareColumns` can't name it without
+ * guessing. */
+function isBareColumnRef(item: Node[]): boolean {
+  if (item.length === 0 || item.length % 2 === 0) return false;
+  for (let i = 0; i < item.length; i++) {
+    const node = item[i];
+    if (node.kind !== "leaf") return false;
+    if (i % 2 === 1) {
+      if (!(node.leaf.token.type === "punctuation" && node.leaf.token.value === ".")) return false;
+    } else {
+      if (node.leaf.token.type !== "identifier" && node.leaf.token.type !== "quotedIdentifier") return false;
+    }
+  }
+  return true;
+}
+
+/** For `aliasing.autoAliasBareColumns`: if `item` is a bare column reference
+ * (per `isBareColumnRef`) with no alias yet, appends a synthetic `AS <name>`
+ * using the reference's own last (unqualified) segment as the alias name —
+ * `t.my_col` -> `t.my_col AS my_col`. The synthetic alias leaf is a plain
+ * `identifier` token (not `quotedIdentifier`, unquoting the source name if
+ * it was quoted) so it renders through the normal `casing.identifiers` +
+ * `quoting.quoteAliases` path exactly like a hand-written alias would.
+ * Items that already have a top-level `AS`, or aren't a plain reference
+ * (function calls, expressions, `*`), are returned unchanged — no naming
+ * guesses are made for those. */
+function injectBareColumnAlias(item: Node[]): Node[] {
+  if (topLevelAsIndex(item) !== -1) return item;
+  if (!isBareColumnRef(item)) return item;
+  const last = item[item.length - 1] as LeafNode;
+  const rawName = unquoteIdentifier(last.leaf.token.value);
+  const asLeaf: LeafNode = {
+    kind: "leaf",
+    leaf: { token: { type: "keyword", value: "AS", start: 0, end: 0 }, leadingComments: [], trailingComment: null },
+  };
+  const aliasLeaf: LeafNode = {
+    kind: "leaf",
+    leaf: { token: { type: "identifier", value: rawName, start: 0, end: 0 }, leadingComments: [], trailingComment: null },
+  };
+  return [...item, asLeaf, aliasLeaf];
+}
+
 /** Index of a top-level `=` operator leaf in a list item, or -1. Same
  * "only this item's own top-level nodes" scoping as `topLevelAsIndex`. */
 function topLevelEqualsIndex(item: Node[]): number {
@@ -824,7 +871,10 @@ function printClauseBody(clause: Clause, level: number, ctx: Ctx): string {
     return printList(tuples, level, ctx, (item) => printSeq(item, level, ctx));
   }
   if (LIST_CLAUSES.has(clause.keyword)) {
-    const items = splitTopLevelCommas(clause.body);
+    let items = splitTopLevelCommas(clause.body);
+    if (ctx.style.aliasing.autoAliasBareColumns && (clause.keyword === "SELECT" || clause.keyword === "RETURNING")) {
+      items = items.map(injectBareColumnAlias);
+    }
     if (ctx.style.alignment.aliases && (clause.keyword === "SELECT" || clause.keyword === "RETURNING")) {
       return printAlignedList(items, level, ctx, topLevelAsIndex);
     }

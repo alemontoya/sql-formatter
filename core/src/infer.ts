@@ -740,6 +740,7 @@ export function inferStyleTemplate(sql: string, options: InferOptions): InferRes
     ctes: { onePerLine: ctes.onePerLine.value, blankLineBetween: ctes.blankLineBetween.value },
     parentheses: { subqueryOpenParenSameLine: subqueryParen.value },
     alignment: { aliases: base.alignment.aliases, assignments: base.alignment.assignments },
+    aliasing: { autoAliasBareColumns: base.aliasing.autoAliasBareColumns },
     quoting: {
       forceQuoteIdentifiers: quoting.forceQuoteIdentifiers.value,
       quoteChar: quoting.quoteChar.value,

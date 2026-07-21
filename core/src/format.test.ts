@@ -392,6 +392,60 @@ describe("format (quoting.forceQuoteIdentifiers / quoting.quoteChar)", () => {
   });
 });
 
+describe("format (aliasing.autoAliasBareColumns)", () => {
+  function withAutoAlias(autoAliasBareColumns: boolean): StyleTemplate {
+    return {
+      ...defaultTemplate,
+      style: {
+        ...defaultTemplate.style,
+        aliasing: { autoAliasBareColumns },
+        quoting: { forceQuoteIdentifiers: true, quoteChar: "double", quoteAliases: false },
+      },
+    };
+  }
+
+  it("adds AS <name> to a bare unqualified column with no existing alias", () => {
+    const sql = "select my_name, your_name from t;";
+    const out = format(sql, withAutoAlias(true));
+    expect(out).toContain('"my_name" AS my_name');
+    expect(out).toContain('"your_name" AS your_name');
+  });
+
+  it("uses the unqualified name as the alias for a qualified column reference", () => {
+    const sql = "select t.my_name from t;";
+    const out = format(sql, withAutoAlias(true));
+    expect(out).toContain('"t"."my_name" AS my_name');
+  });
+
+  it("leaves an already-aliased column untouched", () => {
+    const sql = "select my_name as renamed from t;";
+    const out = format(sql, withAutoAlias(true));
+    expect(out).toContain('"my_name" AS renamed');
+    expect(out).not.toContain("AS renamed AS");
+  });
+
+  it("does not alias a function call, expression, *, or literal", () => {
+    const sql = "select sum(this), a + b, *, u.*, 1 from t;";
+    const out = format(sql, withAutoAlias(true));
+    expect(out).not.toMatch(/SUM\("this"\)\s+AS/);
+    expect(out).not.toMatch(/\* AS/);
+    expect(out).not.toMatch(/1 AS/);
+  });
+
+  it("does nothing when autoAliasBareColumns is false", () => {
+    const sql = "select my_name from t;";
+    const out = format(sql, withAutoAlias(false));
+    expect(out).not.toContain("AS my_name");
+  });
+
+  it("is idempotent", () => {
+    const sql = "select my_name, t.other_name, sum(x) from t;";
+    const once = format(sql, withAutoAlias(true));
+    const twice = format(once, withAutoAlias(true));
+    expect(twice).toBe(once);
+  });
+});
+
 describe("format (CASE)", () => {
   it("preserves a comment on its own line before a WHEN branch", () => {
     const sql = ["select case", "  -- studio", "  when x = 1 then 'a'", "  else 'b'", "end from t;"].join("\n");
